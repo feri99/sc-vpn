@@ -48,7 +48,7 @@ Pastikan sudah berada di user `root`, lalu jalankan perintah berikut:
 ```bash
 apt-get update && \
 apt-get --reinstall --fix-missing install -y whois bzip2 gzip coreutils wget screen nscd build-essential && \
-wget --inet4-only --no-check-certificate -O setup.sh https://raw.githubusercontent.com/alrescha79-cmd/sc-vpn/refs/heads/main/setup.sh && \
+wget --inet4-only --no-check-certificate -O setup.sh https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/setup.sh && \
 chmod +x setup.sh && \
 screen -S setup ./setup.sh
 ```
@@ -60,7 +60,7 @@ Lihat [Panduan Instalasi](./install.md) untuk instruksi lengkap.
 Jika ingin menghapus instalasi, jalankan perintah berikut:
 
 ```bash
-wget -O uninstaller.sh https://raw.githubusercontent.com/alrescha79-cmd/sc-vpn/main/uninstall.sh && chmod +x uninstaller.sh && sudo ./uninstaller.sh
+wget -O uninstaller.sh https://raw.githubusercontent.com/feri99/sc-vpn/main/uninstall.sh && chmod +x uninstaller.sh && sudo ./uninstaller.sh
 ```
 
 Lihat [Panduan Uninstall](./uninstall.md) untuk instruksi lengkap.
@@ -161,8 +161,8 @@ Otomatis reboot VPS setiap hari pada jam 05:00 WIB. Anda dapat mengubah jadwal i
 | Kanal | Link |
 |-------|------|
 | Telegram | [Hubungi di Telegram](https://t.me/Alrescha79) |
-| Bot Telegram | [bot-vpn](https://github.com/alrescha79-cmd/bot-vpn) |
-| Web Dashboard VPN | [dashboard-vpn](https://github.com/alrescha79-cmd/dashboard-vpn) |
+| Bot Telegram | [bot-vpn](https://github.com/feri99/bot-vpn) |
+| Web Dashboard VPN | [dashboard-vpn](https://github.com/feri99/dashboard-vpn) |
 | Email | [Kirim Email](mailto:anggun@cakson.my.id) |
 
 ---
@@ -171,6 +171,6 @@ Otomatis reboot VPS setiap hari pada jam 05:00 WIB. Anda dapat mengubah jadwal i
 
 MIT License – lihat [LICENSE](./LICENSE).
 
-Copyright (C) 2025 [Alrescha79](https://github.com/alrescha79-cmd). All rights reserved.
+Copyright (C) 2025 [Alrescha79](https://github.com/feri99). All rights reserved.
 
 ---

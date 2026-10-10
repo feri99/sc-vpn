@@ -20,7 +20,7 @@ Script utama untuk uninstall VPN Panel
 ### Uninstall Langsung
 
 ```bash
-wget -O uninstaller.sh https://raw.githubusercontent.com/alrescha79-cmd/sc-vpn/main/uninstall.sh && chmod +x uninstaller.sh && sudo ./uninstaller.sh
+wget -O uninstaller.sh https://raw.githubusercontent.com/feri99/sc-vpn/main/uninstall.sh && chmod +x uninstaller.sh && sudo ./uninstaller.sh
 ```
 
 ## 🗑️ Yang Dihapus
@@ -143,10 +143,10 @@ Jika mengalami masalah:
 
 - 💬 **Telegram**: [@Alrescha79](https://t.me/Alrescha79)
 - 📧 **Email**: anggun@cakson.my.id
-- 🐛 **Issues**: [GitHub Issues](https://github.com/alrescha79-cmd/sc-vpn/issues)
+- 🐛 **Issues**: [GitHub Issues](https://github.com/feri99/sc-vpn/issues)
 
 ## 📄 Lisensi
 
-Copyright (C) 2025 [Alrescha79](https://github.com/alrescha79-cmd). All rights reserved.
+Copyright (C) 2025 [Alrescha79](https://github.com/feri99). All rights reserved.
 
 ---

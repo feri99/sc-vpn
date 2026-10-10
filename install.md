@@ -57,7 +57,7 @@ sudo su
 ```bash
 apt-get update && \
 apt-get --reinstall --fix-missing install -y whois bzip2 gzip coreutils wget screen nscd build-essential && \
-wget --inet4-only --no-check-certificate -O setup.sh https://raw.githubusercontent.com/alrescha79-cmd/sc-vpn/refs/heads/main/setup.sh && \
+wget --inet4-only --no-check-certificate -O setup.sh https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/setup.sh && \
 chmod +x setup.sh && \
 screen -S setup ./setup.sh
 ```
@@ -88,7 +88,7 @@ Jika saat proses instalasi (Langkah 1) sesi terminal terputus, jangan jalankan u
 - Jika tidak bisa masuk ke `opsi (8) Menu Features`, keluar dari `menu` dengan `CTRL  C`. Kemudian jalankan perintah:
 
   ```bash
-  curl -o /usr/bin/features https://raw.githubusercontent.com/alrescha79-cmd/sc-vpn/refs/heads/main/project/features
+  curl -o /usr/bin/features https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/project/features
   ```
 
 - Jika ada masalah, silakan hubungi saya di Telegram: [@Alrescha79](https://t.me/Alrescha79)
@@ -221,6 +221,6 @@ Butuh bantuan / melaporkan bug:
 
 Proyek ini dilisensikan di bawah MIT License - lihat berkas [LICENSE](./LICENSE).
 
-Copyright © 2025 [Alrescha79](https://github.com/alrescha79-cmd)
+Copyright © 2025 [Alrescha79](https://github.com/feri99)
 
 ---

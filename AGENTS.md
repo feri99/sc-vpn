@@ -5,7 +5,7 @@ VPN panel auto-installer (Xray / OVPN / SSH / Shadowsocks) for Debian/Ubuntu VPS
 ## Branches & deploy
 
 - `main` is the primary and only branch.
-- Installed servers fetch scripts directly from `raw.githubusercontent.com/alrescha79-cmd/sc-vpn/refs/heads/main/...` (hardcoded in setup.sh, menu.sh, package-gohide.sh, update.sh). Local edits reach servers after push to `main`.
+- Installed servers fetch scripts directly from `raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/...` (hardcoded in setup.sh, menu.sh, package-gohide.sh, update.sh). Local edits reach servers after push to `main`.
 
 ## Install is free (no license gate)
 
