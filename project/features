@@ -1,0 +1,708 @@
+#!/bin/bash
+
+# Valid Script
+ipsaya=$(curl -sS ipv4.icanhazip.com)
+data_server=$(curl -v --insecure --silent https://google.com/ 2>&1 | grep Date | sed -e 's/< Date: //')
+date_list=$(date +"%Y-%m-%d" -d "$data_server")
+
+green="\e[38;5;87m"
+red="\e[38;5;196m"
+neutral="\e[0m"
+blue="\e[38;5;130m"
+orange="\e[38;5;99m"
+yellow="\e[38;5;226m"
+purple="\e[38;5;141m"
+bold_white="\e[1;37m"
+reset="\e[0m"
+pink="\e[38;5;205m"
+print_rainbow() {
+local text="$1"
+local length=${#text}
+local start_color=(0 5 0)
+local mid_color=(0 200 0)
+local end_color=(0 5 0)
+for ((i = 0; i < length; i++)); do
+local progress=$((i * 100 / (length - 1)))
+if [ $progress -lt 50 ]; then
+local factor=$((progress * 2))
+r=$(( (start_color[0] * (100 - factor) + mid_color[0] * factor) / 100 ))
+g=$(( (start_color[1] * (100 - factor) + mid_color[1] * factor) / 100 ))
+b=$(( (start_color[2] * (100 - factor) + mid_color[2] * factor) / 100 ))
+else
+local factor=$(((progress - 50) * 2))
+r=$(( (mid_color[0] * (100 - factor) + end_color[0] * factor) / 100 ))
+g=$(( (mid_color[1] * (100 - factor) + end_color[1] * factor) / 100 ))
+b=$(( (mid_color[2] * (100 - factor) + end_color[2] * factor) / 100 ))
+fi
+printf "\e[38;2;%d;%d;%dm%s" "$r" "$g" "$b" "${text:$i:1}"
+done
+echo -e "$reset" # Reset color at the end
+}
+fun_bar() {
+CMD[0]="$1"
+CMD[1]="$2"
+(
+[[ -e $HOME/fim ]] && rm $HOME/fim
+${CMD[0]} -y >/dev/null 2>&1
+${CMD[1]} -y >/dev/null 2>&1
+touch $HOME/fim
+) >/dev/null 2>&1 &
+tput civis
+echo -ne "  ${orange}Mohon tunggu sedang memuat ${neutral}- ${orange}["
+while true; do
+for ((i = 0; i < 18; i++)); do
+echo -ne "${green}#"
+sleep 0.1s
+done
+[[ -e $HOME/fim ]] && rm $HOME/fim && break
+echo -e "${orange}]"
+sleep 1s
+tput cuu1
+tput dl1
+echo -ne "  ${orange}Mohon tunggu sedang memuat ${neutral}- ${orange}["
+done
+echo -e "${orange}]${neutral} -${green} OK !${neutral}"
+tput cnorm
+}
+restart_services() {
+services=(
+"ssh" "dropbear" "ws" "openvpn" "nginx" "haproxy"
+"xray@vmess" "xray@vless" "xray@trojan" "xray@shadowsocks"
+)
+for service in "${services[@]}"; do
+echo -e "\033[0;33mRestarting service: \033[0;32m$service\033[0m"
+fun_bar "systemctl restart $service"
+done
+clear
+echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+echo -e "${orange}║                 ${green}MULAI ULANG LAYANAN SERVER   ${orange}                        ║${neutral}"
+echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+echo -e ""
+}
+
+check_bw() {
+clear
+echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+echo -e "${orange}║                     ${green}VNSTAT BANDWIDTH STATISTICS   ${orange}                    ║${neutral}"
+echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+if ! command -v vnstat &>/dev/null; then
+echo -e "${red}Error: vnstat belum terpasang.${neutral}"
+echo -e "Silakan instal vnstat terlebih dahulu."
+read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu utama"
+return
+fi
+if [ -z "$(vnstat --iflist)" ]; then
+echo -e "${red}Error: Tidak ada antarmuka jaringan untuk vnstat.${neutral}"
+read -n 1 -s -r -p "Tekan tombol untuk kembali ke menu utama"
+return
+fi
+vnstat
+echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+echo -e "       ${green}1.${neutral} Lihat statistik bandwidth"
+echo -e "       ${green}2.${neutral} Kembali ke menu utama"
+echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+echo -e ""
+read -p " Pilih menu (1-2): " choice
+case $choice in
+1)
+echo -e "\nRentang Waktu :"
+echo -e "     ${green}1.${neutral} Hari ini"
+echo -e "     ${green}2.${neutral} Minggu ini"
+echo -e "     ${green}3.${neutral} Bulan ini"
+echo -e "     ${green}4.${neutral} Tahun ini"
+read -p " Pilih rentang waktu (1-4): " period
+case $period in
+1) vnstat -d 1 ;;
+2) vnstat -d ;;
+3) vnstat -m ;;
+4) vnstat -y ;;
+*) echo -e "   ${red}Pilihan tidak valid.${neutral}" ;;
+esac
+;;
+2) return ;;
+*) echo -e "   ${red}Pilihan tidak valid.${neutral}" ;;
+esac
+read -n 1 -s -r -p "Tekan sembarang tombol untuk kembali ke menu utama"
+return
+}
+info_port() {
+clear
+echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+echo -e "${orange}║                            ${green}INFORMASI PORT       ${orange}                      ║${neutral}"
+echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+echo -e "   ${green}• SSH           : ${neutral}22, 443, 80      ║   ${green}• Shadowsocks : ${neutral}443"
+echo -e "   ${green}• Dropbear      : ${neutral}443, 109, 143    ║   ${green}• Trojan      : ${neutral}443"
+echo -e "   ${green}• SSH Websocket : ${neutral}80, 443          ║   ${green}• XRAY Vless  : ${neutral}80, 443"
+echo -e "   ${green}• OpenVPN       : ${neutral}443, 1194, 2200  ║   ${green}• XRAY Vmess  : ${neutral}80, 443"
+echo -e "   ${green}• Nginx         : ${neutral}80, 81, 443      ║   ${green}• DNS         : ${neutral}53, 44"
+echo -e "   ${green}• Haproxy       : ${neutral}80, 443          ║"
+echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+echo -e "  ${yellow}• Time Zone             : ${neutral}Asia/Jakarta (GMT +7)"
+if [[ -f /etc/cron.d/daily_reboot ]]; then
+reboot_time=$(grep -oP '^\d+\s+\d+' /etc/cron.d/daily_reboot | head -1 | awk '{printf "%02d:%02d", $2, $1}')
+echo -e "  ${yellow}• Otomatis Restart      : ${neutral}${reboot_time} GMT +7"
+else
+echo -e "  ${yellow}• Otomatis Restart      : ${neutral}Tidak Aktif"
+fi
+echo -e "  ${yellow}• Hapus Otomatis Expired: ${neutral}Aktif"
+echo -e "${orange}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+echo -e ""
+read -n 1 -s -r -p "Tekan sembarang tombol untuk kembali ke menu utama"
+return
+}
+change_domain() {
+clear
+echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+echo -e "${orange}║                           ${green}GANTI DOMAIN SERVER      ${orange}                   ║${neutral}"
+echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+echo -e ""
+read -p "  Masukkan Domain Baru: " new_domain
+if [ -z "$new_domain" ]; then
+echo -e "  ${red}Error: Domain tidak boleh kosong${neutral}"
+read -n 1 -s -r -p "Tekan sembarang tombol untuk kembali"
+return 1
+fi
+current_domain=$(cat /etc/xray/domain)
+if [ "$new_domain" = "$current_domain" ]; then
+echo -e "\n  ${yellow}Domain yang dimasukkan sama dengan domain saat ini.${neutral}"
+read -p "  Apakah Anda ingin memperbarui sertifikat SSL? (y/n): " renew_cert
+if [[ $renew_cert =~ ^[Yy]$ ]]; then
+echo -e "\n  ${green}Sedang memperbarui sertifikat SSL...${neutral}"
+else
+echo -e "\n  ${green}Tidak ada perubahan yang dilakukan.${neutral}"
+read -n 1 -s -r -p "Tekan sembarang tombol untuk kembali ke menu"
+return 0
+fi
+else
+echo -e "\n  ${green}Sedang memperbarui domain...${neutral}"
+echo -e ""
+fi
+show_loading() {
+local pid=$1
+local message=$2
+local delay=0.1
+local spinstr='|/-\'
+while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+local temp=${spinstr#?}
+printf " %s [%c]  " "$message" "$spinstr"
+local spinstr=$temp${spinstr%"$temp"}
+sleep $delay
+printf "\r"
+done
+printf "    \n"
+}
+{
+systemctl stop nginx >/dev/null 2>&1
+systemctl stop haproxy >/dev/null 2>&1
+server_ip=$(curl -s ipv4.icanhazip.com)
+domain_ip=$(getent ahosts $new_domain | awk '{print $1}' | head -n 1)
+if [ "$server_ip" != "$domain_ip" ]; then
+echo -e ""
+systemctl start nginx >/dev/null 2>&1
+systemctl start haproxy >/dev/null 2>&1
+return 1
+fi
+if [ $? -ne 0 ]; then
+systemctl start nginx >/dev/null 2>&1
+systemctl start haproxy >/dev/null 2>&1
+return 1
+fi
+if [ -f /etc/xray/domain ]; then
+rm -rf /etc/xray/domain >/dev/null 2>&1
+fi
+echo $new_domain > /etc/xray/domain
+if [ $? -ne 0 ]; then
+echo -e "\n${red}Failed to write new domain ${neutral}"
+systemctl start nginx >/dev/null 2>&1
+systemctl start haproxy >/dev/null 2>&1
+return 1
+fi
+/root/.acme.sh/acme.sh --upgrade --auto-upgrade >/dev/null 2>&1
+/root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1
+/root/.acme.sh/acme.sh --issue -d $new_domain --standalone -k ec-256 >/dev/null 2>&1
+/root/.acme.sh/acme.sh --installcert -d $new_domain --fullchainpath /etc/xray/xray.crt --keypath /etc/xray/xray.key --ecc >/dev/null 2>&1
+cat /etc/xray/xray.crt /etc/xray/xray.key | tee /etc/haproxy/yha.pem >/dev/null 2>&1
+chown www-data:www-data /etc/xray/xray.key >/dev/null 2>&1
+chown www-data:www-data /etc/xray/xray.crt >/dev/null 2>&1
+systemctl restart haproxy >/dev/null 2>&1
+systemctl restart nginx >/dev/null 2>&1
+} &
+show_loading $! "  Sedang memperbarui domain dan sertifikat SSL..."
+wait $!
+process_status=$?
+if [ $process_status -eq 0 ]; then
+if [ "$new_domain" = "$current_domain" ]; then
+echo -e "\n  ${green}Success: Certificate renewed - $new_domain${neutral}"
+else
+echo -e "\n  ${green}Success: Domain changed to $new_domain${neutral}"
+fi
+echo -e "  ${yellow}Restart VPS untuk menerapkan perubahan${neutral}"
+else
+echo -e "\n${red}Gagal memperbarui domain dan sertifikat SSL${neutral}"
+fi
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+read -n 1 -s -r -p "Tekan sembarang tombol untuk kembali ke menu"
+}
+
+running() {
+check_status() {
+status=$(systemctl is-active --quiet $1 && echo "active" || echo "inactive")
+if [ "$status" = "active" ]; then
+echo -e "${green}GOOD${neutral}"
+else
+echo -e "${red}BAD${neutral}"
+fi
+}
+services=(
+"ssh" "dropbear" "ws" "openvpn" "nginx" "haproxy"
+)
+for s in "${services[@]}"; do
+declare "$s"="$(check_status $s)"
+done
+print_info() {
+printf "   ${yellow}%-19s${neutral} : %-25s\n" "$1" "$2"
+}
+clear
+echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+echo -e "${orange}║                             ${green}INFORMASI SYSTEM      ${orange}                    ║${neutral}"
+echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+service_info=(
+"OpenSSH" "${ssh}"
+"Dropbear" "${dropbear}"
+"SSH Websocket" "${ws}"
+"OpenVPN" "${openvpn}"
+"Nginx" "${nginx}"
+"Haproxy" "${haproxy}"
+"Xray vmess" "$(check_status vmess@config)"
+"Xray vless" "$(check_status vless@config)"
+"Xray trojan" "$(check_status trojan@config)"
+"Xray SSocks" "$(check_status shadowsocks@config)"
+)
+for ((i = 0; i < ${#service_info[@]}; i += 2)); do
+print_info "${service_info[i]}" "${service_info[i + 1]}"
+done
+echo -e "${orange}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+echo ""
+read -n1 -s -r -p "Tekan tombol apapun untuk kembali ke menu utama"; echo ""
+return
+}
+auto_backup() {
+local status=$(grep -qE "^SHELL" /etc/cron.d/backup && echo -e "\033[32m[AKTIF]\033[0m" || echo -e "\033[31m[NONAKTIF]\033[0m")
+clear
+echo -e "${orange}┌──────────────────────────────────────┐${neutral}"
+echo -e "${orange}│${green}     PENGATURAN CADANGAN OTOMATIS     ${orange}│${neutral}"
+echo -e "${orange}└──────────────────────────────────────┘${neutral}"
+echo -e "${orange}┌──────────────────────────────────────┐${neutral}"
+echo -e "${orange}│${neutral} Status AutoBackup : $status"
+echo -e "${orange}│${neutral} 1) Setiap 1 Jam"
+echo -e "${orange}│${neutral} 2) Setiap 1 Hari"
+echo -e "${orange}│${neutral} 3) Setiap 1 Minggu"
+echo -e "${orange}│${neutral} 4) Setiap 1 Bulan"
+echo -e "${orange}│${neutral} 5) Nonaktifkan AutoBackup"
+echo -e "${orange}│${neutral} x) Kembali"
+echo -e "${orange}└──────────────────────────────────────┘${neutral}"
+read -p "Pilih opsi [1-5 atau x]: " pilihan
+case $pilihan in
+1) echo -e "SHELL=/bin/sh\nPATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin\n0 */1 * * * root /usr/bin/backuprestore backup" > /etc/cron.d/backup
+clear
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}│${neutral}      AutoBackup: Setiap 1 Jam"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+service cron restart > /dev/null 2>&1
+;;
+2) echo -e "SHELL=/bin/sh\nPATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin\n0 0 * * * root /usr/bin/backuprestore backup" > /etc/cron.d/backup
+clear
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}│${neutral}      AutoBackup: Setiap 1 Hari"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+service cron restart > /dev/null 2>&1
+;;
+3) echo -e "SHELL=/bin/sh\nPATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin\n0 0 * * 7 root /usr/bin/backuprestore backup" > /etc/cron.d/backup
+clear
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}│${neutral}      AutoBackup: Setiap 1 Minggu"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+service cron restart > /dev/null 2>&1
+;;
+4) echo -e "SHELL=/bin/sh\nPATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin\n0 0 1 * * root /usr/bin/backuprestore backup" > /etc/cron.d/backup
+clear
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}│${neutral}      AutoBackup: Setiap 1 Bulan"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+service cron restart > /dev/null 2>&1
+;;
+5)
+if [ ! -f /etc/cron.d/backup ]; then
+clear
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}│${neutral} AutoBackup Sudah ${red}Nonaktif${neutral}"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+return
+fi
+rm -f /etc/cron.d/backup
+clear
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}│${neutral}      AutoBackup ${red}Dinonaktifkan${neutral}"
+echo -e "${orange}│${neutral}"
+echo -e "${orange}─────────────────────────────────────────${neutral}"
+service cron restart > /dev/null 2>&1
+return
+;;
+x|X) clear; read -n1 -s -r -p "Kembali ke menu utama"; return ;;
+*) echo "Pilihan tidak valid. Coba lagi."; return ;;
+esac
+read -n1 -s -r -p "Tekan tombol untuk kembali ke menu utama" 2>/dev/null
+return
+}
+
+dropbear_update() {
+clear
+echo -e "${red}PERINGATAN:${neutral} Fitur pembaruan Dropbear ini masih ${yellow}eksperimental${neutral}." 
+echo -e "Melanjutkan bisa berpotensi merusak sistem panel VPN Anda. Pastikan sudah backup!"
+echo -e "╔═══════════════════════════════════════════════════════════════════════╗"
+echo -e "║                       UPDATE VERSI DROPBEAR                           ║"
+echo -e "╚═══════════════════════════════════════════════════════════════════════╝"
+echo -e "╔═══════════════════════════════════════════════════════════════════════╗"
+echo -e "║ 1) Dropbear (2017)                                                    ║"
+echo -e "║ 2) Dropbear (2019)                                                    ║"
+echo -e "║ 3) Dropbear (2022)                                                    ║"
+echo -e "║ 4) Dropbear (2024)                                                    ║"
+echo -e "║ 5) Dropbear (2025)                                                    ║"
+echo -e "║ x) Kembali                                                          ║"
+echo -e "╚═══════════════════════════════════════════════════════════════════════╝"
+read -p "Pilih opsi [1-5 or x]: " pilihan
+case $pilihan in
+1) wget https://matt.ucc.asn.au/dropbear/releases/dropbear-2017.75.tar.bz2
+bzip2 -cd dropbear-2017.75.tar.bz2 | tar xvf -
+cd dropbear-2017.75
+./configure
+make && make install
+mv /usr/sbin/dropbear /usr/sbin/dropbear1
+ln /usr/local/sbin/dropbear /usr/sbin/dropbear
+echo "/bin/false" >> /etc/shells
+echo "/usr/sbin/nologin" >> /etc/shells
+/etc/init.d/dropbear restart
+cd
+;;
+2) wget https://matt.ucc.asn.au/dropbear/releases/dropbear-2019.78.tar.bz2
+bzip2 -cd dropbear-2019.78.tar.bz2 | tar xvf -
+cd dropbear-2019.78
+./configure
+make && make install
+mv /usr/sbin/dropbear /usr/sbin/dropbear1
+ln /usr/local/sbin/dropbear /usr/sbin/dropbear
+echo "/bin/false" >> /etc/shells
+echo "/usr/sbin/nologin" >> /etc/shells
+/etc/init.d/dropbear restart
+cd
+;;
+3) wget https://matt.ucc.asn.au/dropbear/releases/dropbear-2022.82.tar.bz2
+bzip2 -cd dropbear-2022.82.tar.bz2 | tar xvf -
+cd dropbear-2022.82
+./configure
+make && make install
+mv /usr/sbin/dropbear /usr/sbin/dropbear1
+ln /usr/local/sbin/dropbear /usr/sbin/dropbear
+echo "/bin/false" >> /etc/shells
+echo "/usr/sbin/nologin" >> /etc/shells
+/etc/init.d/dropbear restart
+cd
+;;
+4) wget https://matt.ucc.asn.au/dropbear/releases/dropbear-2024.84.tar.bz2
+bzip2 -cd dropbear-2024.84.tar.bz2 | tar xvf -
+cd dropbear-2024.84
+./configure
+make && make install
+mv /usr/sbin/dropbear /usr/sbin/dropbear1
+ln /usr/local/sbin/dropbear /usr/sbin/dropbear
+echo "/bin/false" >> /etc/shells
+echo "/usr/sbin/nologin" >> /etc/shells
+/etc/init.d/dropbear restart
+cd
+;;
+5) wget https://matt.ucc.asn.au/dropbear/releases/dropbear-2025.87.tar.bz2
+bzip2 -cd dropbear-2025.87.tar.bz2 | tar xvf -
+cd dropbear-2025.87
+./configure
+make && make install
+mv /usr/sbin/dropbear /usr/sbin/dropbear1
+ln /usr/local/sbin/dropbear /usr/sbin/dropbear
+echo "/bin/false" >> /etc/shells
+echo "/usr/sbin/nologin" >> /etc/shells
+/etc/init.d/dropbear restart
+cd
+;;
+x|X) clear; read -n1 -s -r -p "Kembali ke menu utama"; return ;;
+*) echo "Invalid choice. Please try again."; return ;;
+esac
+read -n1 -s -r -p "Tekan tombol untuk kembali ke menu utama" 2>/dev/null
+return
+}
+
+setting_reboot_jam_reboot() {
+  clear
+  echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+  echo -e "${green}║                         PENGATURAN AUTO REBOOT VPS                    ║${neutral}"
+  echo -e "${orange}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+
+  local status="Tidak Aktif"
+  local curr_hour="--"
+  if [[ -f /etc/cron.d/daily_reboot ]]; then
+      curr_hour=$(grep -E '/sbin/reboot' /etc/cron.d/daily_reboot 2>/dev/null | awk '{print $2}')
+      if [[ -n $curr_hour ]]; then
+          status="Aktif (Setiap hari jam ${curr_hour}:00)"
+      fi
+  fi
+
+  echo -e "  ${yellow}Status Saat Ini : ${neutral}$status"
+  if [[ $status != "Tidak Aktif" ]]; then
+      echo -e "  File Cron      : ${neutral}/etc/cron.d/daily_reboot"
+  fi
+  echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+  echo -e "  Opsi:"
+  echo -e "   ${green}1.${neutral} Ubah / Setel Jadwal Reboot Harian"
+  echo -e "   ${green}2.${neutral} Nonaktifkan Auto Reboot"
+  echo -e "   ${green}x.${neutral} Kembali"
+  echo -e "${orange}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+  read -p "  Pilih opsi [1/2/x]: " opt
+  case $opt in
+      1)
+          read -p "  Masukkan jam (00-23) reboot harian: " reboot_hour
+          if [[ -z "$reboot_hour" || ! "$reboot_hour" =~ ^[0-9]{2}$ || $reboot_hour -lt 0 || $reboot_hour -gt 23 ]]; then
+              echo -e "  ${red}Input jam tidak valid.${neutral}"
+              read -n1 -s -p "  Tekan tombol untuk kembali"; return
+          fi
+          if [[ -f /etc/cron.d/daily_reboot ]]; then
+              read -p "  Jadwal sudah ada (${curr_hour}:00). Ganti ke ${reboot_hour}:00 ? (y/n): " konfirm
+              [[ ! $konfirm =~ ^[Yy]$ ]] && echo -e "  ${yellow}Dibatalkan, tidak ada perubahan.${neutral}" && sleep 1 && return
+          else
+              read -p "  Terapkan auto reboot jam ${reboot_hour}:00 ? (y/n): " konfirm
+              [[ ! $konfirm =~ ^[Yy]$ ]] && echo -e "  ${yellow}Dibatalkan.${neutral}" && sleep 1 && return
+          fi
+          cat > /etc/cron.d/daily_reboot <<EOF
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+0 $reboot_hour * * * root /sbin/reboot
+EOF
+          systemctl restart cron 2>/dev/null
+          echo -e "\n  ${green}Auto Reboot diset setiap hari jam ${reboot_hour}:00${neutral}"
+          ;;
+      2)
+          if [[ ! -f /etc/cron.d/daily_reboot ]]; then
+              echo -e "  ${yellow}Auto Reboot sudah tidak aktif.${neutral}"
+          else
+              read -p "  Nonaktifkan auto reboot? (y/n): " ans
+              if [[ $ans =~ ^[Yy]$ ]]; then
+                  rm -f /etc/cron.d/daily_reboot
+                  systemctl restart cron 2>/dev/null
+                  echo -e "  ${green}Auto Reboot dinonaktifkan.${neutral}"
+              else
+                  echo -e "  ${yellow}Dibatalkan.${neutral}"
+              fi
+          fi
+          ;;
+      x|X)
+          return ;;
+      *)
+          echo -e "  ${red}Pilihan tidak dikenal.${neutral}" ;;
+  esac
+  echo -e "${orange}═══════════════════════════════════════════════════════════════════════${neutral}"
+  read -n1 -s -p "  Tekan tombol untuk kembali ke menu utama"
+}
+
+xray_update() {
+clear
+echo -e "${red}PERINGATAN:${neutral} Pembaruan versi Xray ${yellow}eksperimental${neutral}. Pastikan konfigurasi & data sudah di-backup."
+echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+echo -e "${orange}║                               ${green} UPDATE VERSI XRAY ${orange}                     ║${neutral}"
+echo -e "${orange}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+echo -e "       ${neutral} 1) Xray (V1.8.3)"
+echo -e "       ${neutral} 2) Xray (V1.8.17)"
+echo -e "       ${neutral} 3) Xray (V24.10.31)"
+echo -e "       ${neutral} 4) Xray (V25.1.1)"
+echo -e "       ${neutral} 5) Xray (V25.2.18)"
+echo -e "       ${neutral} x) Kembali"
+echo -e "${orange}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+read -p "Pilih opsi [1-5 or x]: " pilihan
+case $pilihan in
+1) sudo mv /usr/local/bin/xray /usr/local/bin/xray.bak && \
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u www-data --version 1.8.3
+sed -i 's/"enabled": true/"enabled": false/' /etc/xray/vmess/config.json \
+/etc/xray/vless/config.json \
+/etc/xray/trojan/config.json \
+/etc/xray/shadowsocks/config.json && \
+systemctl restart vmess@config vless@config trojan@config shadowsocks@config
+;;
+2) sudo mv /usr/local/bin/xray /usr/local/bin/xray.bak && \
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u www-data --version 1.8.17
+sed -i 's/"enabled": true/"enabled": false/' /etc/xray/vmess/config.json \
+/etc/xray/vless/config.json \
+/etc/xray/trojan/config.json \
+/etc/xray/shadowsocks/config.json && \
+systemctl restart vmess@config vless@config trojan@config shadowsocks@config
+;;
+3) sudo mv /usr/local/bin/xray /usr/local/bin/xray.bak && \
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u www-data --version 24.10.31
+sed -i 's/"enabled": true/"enabled": false/' /etc/xray/vmess/config.json \
+/etc/xray/vless/config.json \
+/etc/xray/trojan/config.json \
+/etc/xray/shadowsocks/config.json && \
+systemctl restart vmess@config vless@config trojan@config shadowsocks@config
+;;
+4) sudo mv /usr/local/bin/xray /usr/local/bin/xray.bak && \
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u www-data --version 25.1.1
+sed -i 's/"enabled": true/"enabled": false/' /etc/xray/vmess/config.json \
+/etc/xray/vless/config.json \
+/etc/xray/trojan/config.json \
+/etc/xray/shadowsocks/config.json && \
+systemctl restart vmess@config vless@config trojan@config shadowsocks@config
+;;
+5)
+sudo mv /usr/local/bin/xray /usr/local/bin/xray.bak && \
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u www-data --version 25.2.18
+sed -i 's/"enabled": true/"enabled": false/' /etc/xray/vmess/config.json \
+/etc/xray/vless/config.json \
+/etc/xray/trojan/config.json \
+/etc/xray/shadowsocks/config.json && \
+systemctl restart vmess@config vless@config trojan@config shadowsocks@config
+return
+;;
+x|X) clear; read -n1 -s -r -p "Kembali ke menu utama"; return ;;
+*) echo "Invalid choice. Please try again."; return ;;
+esac
+read -n1 -s -r -p "Tekan tombol untuk kembali ke menu utama" 2>/dev/null
+return
+}
+
+uninstall_panel_vpn() {
+    clear
+    echo -e "${red}PERINGATAN:${neutral} Fitur ini akan menghapus semua konfigurasi panel VPN dan layanan terkait."
+    echo -e "Pastikan Anda sudah melakukan backup data penting sebelum melanjutkan."
+    echo -e ""
+    echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+    echo -e "${orange}║                         UNINSTALL PANEL VPN                           ║${neutral}"
+    echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+    echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+    echo -e "${orange}║${neutral}                     ${yellow}TATA CARA UNINSTALL VPN PANEL${neutral}                     ${orange}║${neutral}"
+    echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+    echo -e "${neutral} ${green}Step 1:${neutral} Keluar dari menu ini dengan menekan ${red}Ctrl+C${neutral}"
+    echo -e ""
+    echo -e "${neutral} ${green}Step 2:${neutral} Jalankan perintah berikut:"
+    echo -e "${neutral}                                                                       ${neutral}"
+    echo -e "${neutral} ${blue}wget https://raw.githubusercontent.com/alrescha79-cmd/sc-vpn/main/uninstall.sh && chmod +x uninstall.sh && sudo ./uninstall.sh${neutral} "
+    echo -e ""
+    echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+    echo -e "${neutral} ${yellow}CATATAN PENTING:${neutral}"
+    echo -e "${neutral} • Script uninstall akan menghapus semua komponen VPN"
+    echo -e "${neutral} • SSH access akan TETAP AMAN dan tidak akan dihapus"
+    echo -e "${neutral} • Backup data penting sebelum menjalankan uninstall"
+    echo -e "${neutral} • Proses tidak dapat dibatalkan setelah konfirmasi"
+    echo -e "${orange}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+    echo -e ""
+    echo -e "${yellow}Tekan Ctrl+C untuk keluar dari menu dan jalankan perintah di atas.${neutral}"
+    echo -e ""
+    read -n 1 -s -r -p "Atau tekan sembarang tombol untuk kembali ke menu utama"
+}
+
+display_features() {
+    while true; do
+        clear
+        echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+        echo -e "${orange}║                      ${green} MENU PENGATURAN SISTEM & FITUR ${orange}                 ║${neutral}"
+        echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+        echo -e "${orange}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+            echo -e "${neutral}${green} [1]${neutral} Periksa Sistem Berjalan    ║${neutral} ${green} [9]${neutral}  Perbarui Dropbear"
+            echo -e "${neutral}${green} [2]${neutral} Periksa Penggunaan BW      ║${neutral}  ${green}[10]${neutral} Perbarui Versi X-ray"
+        echo -e "${neutral}${green} [3]${neutral} Cadangan Otomatis Server   ║${neutral}  ${green}[11]${neutral} Gotop (Monitor Sistem)"
+        echo -e "${neutral}${green} [4]${neutral} Cadangkan/Pulihkan Server  ║${neutral}  ${green}[12]${neutral} Pengaturan Mulai Ulang Otomatis"
+        echo -e "${neutral}${green} [5]${neutral} Informasi Port             ║${neutral}  ${green}[13]${neutral} Uninstall Panel VPN"
+        echo -e "${neutral}${green} [6]${neutral} Mulai Ulang Semua Layanan  ║${neutral}  ${green}[14]${neutral} Mulai Ulang Server"
+        echo -e "${neutral}${green} [7]${neutral} Ubah Domain Server"
+        echo -e "${neutral}${green} [8]${neutral} Ubah Banner Server"
+        echo -e "${neutral}                 ${red} [x]${neutral} Keluar dari Menu Sistem & Fitur${neutral}"
+        echo -e "${orange}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+        echo -e ""
+        echo -ne "   ${green}Pilih menu [1-14] atau ketik 'x' untuk keluar: ${neutral}"
+        read menu
+        case $menu in
+            1) running ;;
+            2) check_bw ;;
+            3) auto_backup ;;
+            4) backuprestore server ;;
+            5) info_port ;;
+            6) restart_services ;;
+            7) change_domain ;;
+            8) nano /etc/gerhanatunnel.txt; clear ;;
+            9) echo -e "${red}PERINGATAN:${neutral} Fitur ini masih ${yellow}eksperimental${neutral}. Bisa menyebabkan kerusakan sistem panel VPN."; read -p " Lanjutkan pembaruan Dropbear? (y/n): " ans; [[ ! $ans =~ ^[Yy]$ ]] && continue; dropbear_update ;;
+            10) echo -e "${red}PERINGATAN:${neutral} Pembaruan versi Xray masih ${yellow}eksperimental${neutral}. Pastikan Anda punya backup."; read -p " Lanjutkan update Xray? (y/n): " ans; [[ ! $ans =~ ^[Yy]$ ]] && continue; xray_update ;;
+            11)
+                # Countdown sebelum menjalankan gotop dengan opsi batal Ctrl+C
+                if ! command -v gotop >/dev/null 2>&1; then
+                    echo -e "${red}gotop belum terpasang. Silakan instal terlebih dahulu.${neutral}"
+                    sleep 2
+                    continue
+                fi
+                echo -e "${orange}Menjalankan monitor sistem (gotop) dalam 5 detik...${neutral}"
+                echo -e "${yellow}Tekan Ctrl+C untuk membatalkan dan kembali ke menu.${neutral}"
+                cancel_flag=0
+                (
+                  trap 'cancel_flag=1' INT
+                  for i in 5 4 3 2 1; do
+                      if [ "$cancel_flag" = 1 ]; then break; fi
+                      printf " Mulai dalam %s detik... (Ctrl+C untuk batal)\r" "$i"
+                      sleep 1
+                  done
+                  echo -e ""
+                  if [ "$cancel_flag" = 1 ]; then
+                      echo -e "${red}Dibatalkan.${neutral}"
+                      exit 99
+                  fi
+                  exit 0
+                )
+                rc=$?
+                if [ $rc -eq 99 ]; then
+                    # dibatalkan
+                    sleep 1
+                    continue
+                fi
+                gotop
+                ;;
+            12) setting_reboot_jam_reboot ;;
+            13) uninstall_panel_vpn ;;
+            14) read -p " Apakah Anda yakin ingin reboot server? (y/n): " ans; [[ $ans =~ ^[Yy]$ ]] && reboot ;;
+            x|X)
+                echo -e ""
+                echo -e "${green}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+                echo -e "${green}║                    Terima kasih telah menggunakan                     ║${neutral}"
+                echo -e "${green}║                       ALRESCHA79 VPN PANEL                            ║${neutral}"
+                echo -e "${green}║                                                                       ║${neutral}"
+                echo -e "${green}║                 📱 Telegram: https://t.me/FST                  ║${neutral}"
+                echo -e "${green}║                                                                       ║${neutral}"
+                echo -e "${green}║            Ketik perintah ${yellow}menu${green} untuk membuka panel kembali            ║${neutral}"
+                echo -e "${green}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+                return
+                ;;
+            *)
+                echo -e "   ${red}Pilihan tidak valid!${neutral}"
+                sleep 1.5
+                ;;
+        esac
+    done
+}
+# === CALL MENU (LOOP) ===
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    display_features
+fi

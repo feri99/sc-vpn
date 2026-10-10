@@ -1,0 +1,479 @@
+#!/bin/bash
+
+# ===============================
+# DEFINISI WARNA
+# ===============================
+green="\e[38;5;82m"
+red="\e[38;5;196m"
+neutral="\e[0m"
+blue="\e[38;5;130m"
+orange="\e[38;5;99m"
+yellow="\e[38;5;226m"
+purple="\e[38;5;141m"
+bold_white="\e[1;37m"
+reset="\e[0m"
+pink="\e[38;5;205m"
+magenta="\e[38;5;205m"
+cyan="\e[38;5;87m"
+bold="\e[1m"
+
+
+convert_size() {
+    local -i bytes=$1
+    if [[ $bytes -lt 1024 ]]; then
+        echo "${bytes}B"
+    elif [[ $bytes -lt 1048576 ]]; then
+        echo "$(((bytes + 1023) / 1024))KB"
+    elif [[ $bytes -lt 1073741824 ]]; then
+        echo "$(((bytes + 1048575) / 1048576))MB"
+    else
+        echo "$(((bytes + 1073741823) / 1073741824))GB"
+    fi
+}
+
+print_rainbow() {
+    local text="$1"
+    local length=${#text}
+    local start_color=(0 5 0)
+    local mid_color=(0 200 0)
+    local end_color=(0 5 0)
+
+    for ((i = 0; i < length; i++)); do
+        local progress=$((i * 100 / (length - 1)))
+
+        if [ $progress -lt 50 ]; then
+            local factor=$((progress * 2))
+            r=$(((start_color[0] * (100 - factor) + mid_color[0] * factor) / 100))
+            g=$(((start_color[1] * (100 - factor) + mid_color[1] * factor) / 100))
+            b=$(((start_color[2] * (100 - factor) + mid_color[2] * factor) / 100))
+        else
+            local factor=$(((progress - 50) * 2))
+            r=$(((mid_color[0] * (100 - factor) + end_color[0] * factor) / 100))
+            g=$(((mid_color[1] * (100 - factor) + end_color[1] * factor) / 100))
+            b=$(((mid_color[2] * (100 - factor) + end_color[2] * factor) / 100))
+        fi
+
+        printf "\e[38;2;%d;%d;%dm%s" "$r" "$g" "$b" "${text:$i:1}"
+    done
+    echo -e "$reset"
+}
+
+prompt_back_to_menu() {
+    echo -e ""
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    read -n 1 -s -r -p "Tekan [ Enter ] untuk kembali ke menu..."
+    echo -e ""
+    display_ssh_menu
+}
+
+select_ssh_user() {
+    local db_file="/etc/ssh/.ssh.db"
+    if [ ! -f "$db_file" ]; then
+        echo -e "${red}Database akun SSH tidak ditemukan.${neutral}"
+        return 1
+    fi
+
+    mapfile -t accounts < <(grep -E "^### " "$db_file")
+    local total=${#accounts[@]}
+    if [ "$total" -eq 0 ]; then
+        echo -e "${red}Belum ada akun SSH/OpenVPN yang terdaftar.${neutral}"
+        return 1
+    fi
+
+    echo -e "No  | Username           | Kadaluarsa"
+    echo -e "─────────────────────────────────────────────"
+    local idx=1
+    for line in "${accounts[@]}"; do
+        user=$(echo "$line" | awk '{print $2}')
+        exp=$(echo "$line" | awk '{print $3}')
+        cmd=$(date -d "$exp" +%s 2>/dev/null)
+        if [ -n "$cmd" ]; then
+            days_left=$(( (cmd - $(date +%s)) / 86400 ))
+            [ $days_left -lt 0 ] && days_left=0
+        else
+            days_left="-"
+        fi
+        printf "%-3s | %-18s | %-10s\n" "$idx" "$user" "$exp (${days_left} hari)"
+        ((idx++))
+    done
+    echo -e "─────────────────────────────────────────────"
+    echo -e ""
+    read -p " Pilih nomor akun (atau x untuk batal): " choice
+
+    if [[ "$choice" =~ ^[xX]$ ]]; then
+        return 2
+    fi
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+        echo -e "${red}Input harus berupa angka.${neutral}"
+        return 1
+    fi
+
+    if [ "$choice" -lt 1 ] || [ "$choice" -gt "$total" ]; then
+        echo -e "${red}Nomor akun tidak valid.${neutral}"
+        return 1
+    fi
+
+    selected_user=$(echo "${accounts[$((choice-1))]}" | awk '{print $2}')
+    selected_exp=$(echo "${accounts[$((choice-1))]}" | awk '{print $3}')
+    echo "$selected_user $selected_exp"
+    return 0
+}
+
+autokill_ssh() {
+    local cron_file="/etc/cron.d/autokill"
+    local status
+    if [ -f "$cron_file" ] && grep -q "autokill" "$cron_file"; then
+        status="${green}AKTIF${neutral}"
+    else
+        status="${red}NONAKTIF${neutral}"
+    fi
+
+    while true; do
+        clear
+        echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+        echo -e "${green}${bold_white}                   PENGELOLA AUTOKILL SSH/OPENVPN${neutral}"
+        echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+        echo -e ""
+        echo -e " Status Autokill : $status"
+        echo -e ""
+        echo -e "   ${green}[1]${neutral} Aktifkan Autokill (5 menit)"
+        echo -e "   ${green}[2]${neutral} Aktifkan Autokill (10 menit)"
+        echo -e "   ${green}[3]${neutral} Aktifkan Autokill (15 menit)"
+        echo -e "   ${green}[4]${neutral} Nonaktifkan Autokill"
+        echo -e "   ${red}[x]${neutral}  Kembali ke Menu SSH"
+        echo -e ""
+        echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+        read -p " Pilih opsi [1-4/x]: " choice
+
+        case "$choice" in
+        1)
+            cat <<EOF >"$cron_file"
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+*/5 * * * * root /usr/bin/autokill
+EOF
+            service cron restart >/dev/null 2>&1
+            status="${green}AKTIF${neutral}"
+            echo -e ""
+            echo -e "${green}Autokill diaktifkan setiap 5 menit.${neutral}"
+            prompt_back_to_menu
+            return
+            ;;
+        2)
+            cat <<EOF >"$cron_file"
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+*/10 * * * * root /usr/bin/autokill
+EOF
+            service cron restart >/dev/null 2>&1
+            status="${green}AKTIF${neutral}"
+            echo -e ""
+            echo -e "${green}Autokill diaktifkan setiap 10 menit.${neutral}"
+            prompt_back_to_menu
+            return
+            ;;
+        3)
+            cat <<EOF >"$cron_file"
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+*/15 * * * * root /usr/bin/autokill
+EOF
+            service cron restart >/dev/null 2>&1
+            status="${green}AKTIF${neutral}"
+            echo -e ""
+            echo -e "${green}Autokill diaktifkan setiap 15 menit.${neutral}"
+            prompt_back_to_menu
+            return
+            ;;
+        4)
+            rm -f "$cron_file"
+            service cron restart >/dev/null 2>&1
+            status="${red}NONAKTIF${neutral}"
+            echo -e ""
+            echo -e "${yellow}Autokill dinonaktifkan.${neutral}"
+            prompt_back_to_menu
+            return
+            ;;
+        x | X)
+            display_ssh_menu
+            return
+            ;;
+        *)
+            echo -e "${red}Pilihan tidak valid. Coba lagi.${neutral}"
+            sleep 1
+            ;;
+        esac
+    done
+}
+
+lock_ssh() {
+    clear
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e "${green}${bold_white}                       KUNCI AKUN SSH/OPENVPN${neutral}"
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e ""
+
+    local selection
+    selection=$(select_ssh_user) || {
+        prompt_back_to_menu
+        return
+    }
+
+    local user=$(echo "$selection" | awk '{print $1}')
+
+    if [[ "$user" == "root" || "$user" == "admin" ]]; then
+        echo -e "${red}Akun sistem tidak boleh dikunci.${neutral}"
+        prompt_back_to_menu
+        return
+    fi
+
+    if ! grep -q "^$user:" /etc/passwd; then
+        echo -e "${red}Akun $user tidak ditemukan di sistem.${neutral}"
+        prompt_back_to_menu
+        return
+    fi
+
+    if passwd -S "$user" | grep -q " L "; then
+        echo -e "${yellow}Akun ${green}$user${yellow} sudah dalam keadaan terkunci.${neutral}"
+        prompt_back_to_menu
+        return
+    fi
+
+    if passwd -l "$user" >/dev/null 2>&1; then
+        echo "$(date "+%Y-%m-%d %H:%M:%S") LOCKED $user" >>/var/log/ssh_account_actions.log
+        echo -e "${green}Akun ${user} berhasil dikunci.${neutral}"
+    else
+        echo -e "${red}Gagal mengunci akun ${user}.${neutral}"
+    fi
+
+    prompt_back_to_menu
+}
+
+unlock_ssh() {
+    clear
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e "${green}${bold_white}                     BUKA KUNCI AKUN SSH/OPENVPN${neutral}"
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e ""
+
+    local selection
+    selection=$(select_ssh_user) || {
+        prompt_back_to_menu
+        return
+    }
+
+    local user=$(echo "$selection" | awk '{print $1}')
+
+    if ! grep -q "^$user:" /etc/passwd; then
+        echo -e "${red}Akun $user tidak ditemukan di sistem.${neutral}"
+        prompt_back_to_menu
+        return
+    fi
+
+    if ! passwd -S "$user" | grep -q " L "; then
+        echo -e "${yellow}Akun ${green}$user${yellow} sudah terbuka.${neutral}"
+        prompt_back_to_menu
+        return
+    fi
+
+    if passwd -u "$user" >/dev/null 2>&1; then
+        echo "$(date "+%Y-%m-%d %H:%M:%S") UNLOCKED $user" >>/var/log/ssh_account_actions.log
+        echo -e "${green}Akun ${user} berhasil dibuka kuncinya.${neutral}"
+    else
+        echo -e "${red}Gagal membuka kunci akun ${user}.${neutral}"
+    fi
+
+    prompt_back_to_menu
+}
+
+detail_ssh() {
+    clear
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e "${green}${bold_white}                      DETAIL AKUN SSH/OPENVPN${neutral}"
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e ""
+
+    local selection
+    selection=$(select_ssh_user) || {
+        prompt_back_to_menu
+        return
+    }
+
+    local user=$(echo "$selection" | awk '{print $1}')
+
+    clear
+    echo -e "${yellow}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e "${yellow}║                     DETAIL AKUN : ${green}$user${yellow}                     ║${neutral}"
+    echo -e "${yellow}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e ""
+
+    local log_file="/etc/xray/log-createssh-${user}.log"
+    if [ -f "$log_file" ]; then
+        cat "$log_file"
+    else
+        echo -e "${yellow}Catatan akun tidak ditemukan. Kemungkinan akun dibuat manual.${neutral}"
+    fi
+
+    prompt_back_to_menu
+}
+
+change_ssh_limit() {
+    clear
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e "${green}${bold_white}                       UBAH LIMIT AKUN SSH${neutral}"
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e ""
+
+    local selection
+    selection=$(select_ssh_user) || {
+        prompt_back_to_menu
+        return
+    }
+
+    local user=$(echo "$selection" | awk '{print $1}')
+
+    while true; do
+        read -p " Masukkan limit IP baru (minimal 1, x untuk batal): " new_limit
+        if [[ "$new_limit" =~ ^[xX]$ ]]; then
+            prompt_back_to_menu
+            return
+        fi
+        if [[ "$new_limit" =~ ^[1-9][0-9]*$ ]]; then
+            break
+        fi
+        echo -e "${red}Input tidak valid. Masukkan angka lebih besar dari 0 atau 'x' untuk batal.${neutral}"
+    done
+
+    echo "$new_limit" >"/etc/ssh/${user}" || true
+    echo -e "${green}Limit IP untuk akun ${user} diperbarui menjadi ${new_limit} perangkat.${neutral}"
+
+    prompt_back_to_menu
+}
+
+member_ssh() {
+    clear
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e "${green}${bold_white}                        DAFTAR MEMBER SSH${neutral}"
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e ""
+
+    local db_file="/etc/ssh/.ssh.db"
+    if [ ! -f "$db_file" ]; then
+        echo -e "${red}Database akun SSH tidak ditemukan.${neutral}"
+        prompt_back_to_menu
+        return
+    fi
+
+    mapfile -t accounts < <(grep -E "^### " "$db_file")
+    local total=${#accounts[@]}
+
+    if [ "$total" -eq 0 ]; then
+        echo -e "${yellow}Belum ada akun SSH/OpenVPN yang terdaftar.${neutral}"
+        prompt_back_to_menu
+        return
+    fi
+
+    printf "%-3s %-18s %-15s %-15s %-7s\n" "No" "Username" "Kadaluarsa" "Status" "Limit IP"
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+
+    local idx=1
+    local now_ts=$(date +%s)
+    for line in "${accounts[@]}"; do
+        user=$(echo "$line" | awk '{print $2}')
+        exp=$(echo "$line" | awk '{print $3}')
+
+        exp_ts=$(date -d "$exp" +%s 2>/dev/null)
+        if [ -n "$exp_ts" ]; then
+            days_left=$(((exp_ts - now_ts) / 86400))
+        else
+            days_left=-999
+        fi
+
+        if [ "$days_left" -lt 0 ]; then
+            status_text="KADALUARSA"
+            status_color="${red}"
+        elif [ "$days_left" -le 3 ]; then
+            status_text="SEGERA HABIS"
+            status_color="${yellow}"
+        else
+            status_text="AKTIF"
+            status_color="${green}"
+        fi
+
+        if passwd -S "$user" 2>/dev/null | grep -q " L "; then
+            status_text="TERKUNCI"
+            status_color="${red}"
+        fi
+
+        ip_limit=$(cat /etc/ssh/${user} 2>/dev/null || echo "Unlimited")
+
+        printf "%-3s %-18s %-15s " "$idx" "$user" "$exp"
+        echo -ne "${status_color}${status_text}${neutral}"
+        printf " %-10s\n" "$ip_limit"
+        ((idx++))
+    done
+
+    echo -e "${orange}══════════════════════════════════════════════════════════════════════${neutral}"
+    echo -e "Total akun : ${green}${total}${neutral}"
+
+    prompt_back_to_menu
+}
+
+# ===============================
+# TAMPILKAN MENU SSH/OPENVPN
+# ===============================
+display_ssh_menu() {
+    clear
+    echo -e ""
+    echo -e "${magenta}╔══════════════════════════════════════════════════════════════════════╗${neutral}"
+    echo -e "${magenta}║                         ${blue}MANAJEMEN SSH / OPENVPN${magenta}                      ║${neutral}"
+    echo -e "${magenta}╚══════════════════════════════════════════════════════════════════════╝${neutral}"
+    echo -e ""
+    echo -e "${cyan}╔══════════════════════════════════════════════════════════════════════╗${neutral}"
+    echo -e "${cyan}║                           ${blue}PILIHAN MENU${cyan}                               ║${neutral}"
+    echo -e "${cyan}╠══════════════════════════════════════════════════════════════════════╣${neutral}"
+    echo -e ""
+    echo -e "   ${neutral} ${green}[1]${neutral}  Buat Akun SSH/OpenVPN        ${green}[7]${neutral}  Kunci Akun SSH/OpenVPN"
+    echo -e "   ${neutral} ${green}[2]${neutral}  Hapus Akun SSH/OpenVPN       ${green}[8]${neutral}  Buka Kunci SSH/OpenVPN"
+    echo -e "   ${neutral} ${green}[3]${neutral}  Perpanjang SSH/OpenVPN       ${green}[9]${neutral}  Detail Akun SSH/OpenVPN"
+    echo -e "   ${neutral} ${green}[4]${neutral}  Cek Pengguna SSH/OpenVPN     ${green}[10]${neutral} Autokill SSH/OpenVPN"
+    echo -e "   ${neutral} ${green}[5]${neutral}  Daftar Member SSH/OpenVPN    ${green}[11]${neutral} Akun Trial SSH/OpenVPN"
+    echo -e "   ${neutral} ${green}[6]${neutral}  Ubah Limit SSH/OpenVPN       ${red}[x]${neutral}  Kembali ke Menu Utama"
+    echo -e ""
+    echo -e "${cyan}╚══════════════════════════════════════════════════════════════════════╝${neutral}"
+    echo -e ""
+    echo -ne "${yellow}Pilih menu [1-11 atau x]: ${neutral}"
+    read ssh_choice
+
+    case $ssh_choice in
+    1) addssh ;;
+    2) dellssh ;;
+    3) renewssh ;;
+    4) checkssh ;;
+    5) member_ssh ;;
+    6) change_ssh_limit ;;
+    7) lock_ssh ;;
+    8) unlock_ssh ;;
+    9) detail_ssh ;;
+    10) autokill_ssh ;;
+    11) trialssh ;;
+    x | X)
+        echo -e ""
+        echo -e "${green}Kembali ke menu utama...${neutral}"
+        menu
+        ;;
+    *)
+        echo -e ""
+        echo -e "${red}Pilihan tidak valid! Silakan pilih menu yang tersedia.${neutral}"
+        echo -e "${yellow}Tekan Enter untuk mencoba lagi...${neutral}"
+        read
+        display_ssh_menu
+        ;;
+    esac
+}
+
+# ===============================
+# MULAIKAN MENU
+# ===============================
+display_ssh_menu

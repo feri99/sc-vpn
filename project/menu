@@ -1,0 +1,321 @@
+#!/bin/bash
+
+
+# Colors
+green="\e[38;5;87m"
+red="\e[38;5;196m"
+neutral="\e[0m"
+blue="\e[38;5;130m"
+orange="\e[38;5;99m"
+yellow="\e[38;5;226m"
+purple="\e[38;5;141m"
+bold_white="\e[1;37m"
+reset="\e[0m"
+pink="\e[38;5;205m"
+white="\e[38;5;15m"
+cyan="\e[38;5;87m"
+magenta="\e[38;5;205m"
+gray="\e[38;5;245m"
+
+# warna gelap
+dark_gray="\e[38;5;240m"
+dark_blue="\e[38;5;18m"
+dark_red="\e[38;5;88m"
+dark_green="\e[38;5;22m"
+dark_orange="\e[38;5;94m"
+dark_purple="\e[38;5;54m"
+dark_cyan="\e[38;5;30m"
+dark_blue_bg="\e[48;5;18m"
+
+# warna terang
+light_gray="\e[38;5;250m"
+light_blue="\e[38;5;81m"
+light_red="\e[38;5;210m"
+light_green="\e[38;5;120m"
+light_orange="\e[38;5;215m"
+light_purple="\e[38;5;177m"
+light_cyan="\e[38;5;159m"
+light_yellow="\e[38;5;229m"
+
+        # Function to count accounts
+        count_accounts() {
+            if [ ! -e "/etc/xray/$1/.$1.db" ]; then
+                mkdir -p "/etc/xray/$1"
+                touch "/etc/xray/$1/.$1.db"
+            fi
+
+            accounts=$(cat "/etc/xray/$1/.$1.db")
+            if [[ $accounts = "" ]]; then
+                echo "0"
+            else
+                cat "/etc/xray/$1/.$1.db" | grep "###" | wc -l
+            fi
+        }
+
+        # Count accounts
+        vm=$(count_accounts "vmess")
+        vl=$(count_accounts "vless")
+        tr=$(count_accounts "trojan")
+        ss=$(count_accounts "shadowsocks")
+        ssh=$(cat "/etc/ssh/.ssh.db" | grep "###" | wc -l)
+        
+        # Check service status
+        cek_status() {
+            status=$(systemctl is-active --quiet $1 && echo "aktif" || echo "nonaktif")
+            if [ "$status" = "aktif" ]; then
+                echo -e "${green}ON${neutral}"
+            else
+                echo -e "${red}OFF${neutral}"
+            fi
+        }
+
+setup_bot_telegram() {
+clear
+echo -e "${orange}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+echo -e "${green}                             SETUP BOT TELEGRAM                          ${neutral}"
+echo -e "${orange}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+echo -e ""
+if [ -f /root/.vars ]; then
+    source /root/.vars
+    echo -e "${cyan}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+    echo -e "${cyan}║                        KONFIGURASI SAAT INI                           ║${neutral}"
+    echo -e "${cyan}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+    echo -e "${cyan}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+    if [ -n "$bot_token" ]; then
+        masked_token="${bot_token:0:10}***${bot_token: -10}"
+        echo -e "   ${white}Bot Token  : ${green}$masked_token${neutral}"
+    else
+        echo -e "   ${white}Bot Token  : ${red}Tidak tersedia${neutral}"
+    fi
+    
+    if [ -n "$telegram_id" ]; then
+        echo -e "   ${white}Chat ID    : ${green}$telegram_id${neutral}"
+    else
+        echo -e "   ${white}Chat ID    : ${red}Tidak tersedia${neutral}"
+    fi
+    echo -e "${cyan}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+    echo -e ""
+    echo -e "${yellow}Apakah Anda ingin mengganti konfigurasi yang sudah ada?${neutral}"
+    echo -e "${green}[y] Ya, ganti konfigurasi${neutral}"
+    echo -e "${yellow}[n] Tidak, biarkan seperti ini${neutral}"
+    echo -e "${red}[x]${neutral} Kembali ke menu utama${neutral}"
+    echo -ne "${yellow}>> ${neutral}"
+    read -r input
+    
+    case $input in
+        x|X)
+            display_menu
+            return
+            ;;
+        n|N)
+            echo -e ""
+            echo -e "${green}Konfigurasi bot telegram tidak diubah.${neutral}"
+            read -n 1 -s -r -p "Tekan tombol apapun untuk kembali ke menu"
+            display_menu
+            return
+            ;;
+        y|Y)
+            echo -e ""
+            echo -e "${yellow}Melanjutkan untuk mengubah konfigurasi...${neutral}"
+            sleep 1
+            ;;
+        *)
+            echo -e ""
+            echo -e "${red}Pilihan tidak valid. Kembali ke menu utama.${neutral}"
+            sleep 2
+            display_menu
+            return
+            ;;
+    esac
+fi
+
+clear
+echo -e "${light_blue}═════════════════════════════════════════════════════════════════════════════${neutral}"
+echo -e "${bold_white}Masukkan Token Bot Telegram Anda :${neutral}"
+echo -ne "${yellow}>> ${neutral}"
+read bot_token
+echo -e "${light_blue}═════════════════════════════════════════════════════════════════════════════${neutral}"
+echo -e "${bold_white}Masukkan Chat ID Telegram Anda :${neutral}"
+echo -ne "${yellow}>> ${neutral}"
+read chat_id
+echo -e "${light_blue}═════════════════════════════════════════════════════════════════════════════${neutral}"
+
+if [[ -z "$bot_token" || -z "$chat_id" ]]; then
+    echo -e "${red}Token bot atau chat ID tidak boleh kosong.${neutral}"
+    echo -e ""
+    read -n 1 -s -r -p "Tekan tombol apapun untuk kembali ke menu"
+    display_menu
+    return
+fi
+
+# Backup konfigurasi lama jika ada
+if [ -f /root/.vars ]; then
+    cp /root/.vars /root/.vars.backup.$(date +%Y%m%d_%H%M%S)
+    rm -f /root/.vars
+fi
+
+echo "bot_token=\"$bot_token\"" >> /root/.vars
+echo "telegram_id=\"$chat_id\"" >> /root/.vars
+systemctl restart limitip > /dev/null 2>&1
+
+echo -e "${dark_purple}══════════════════════════════════════════════════════════════════════════════${neutral}"
+echo -e "${green}✅ Token bot dan chat ID telah berhasil disimpan di /root/.vars${neutral}"
+echo -e "${green}✅ Service limitip telah direstart untuk menerapkan konfigurasi baru${neutral}"
+echo -e ""
+read -n 1 -s -r -p "Tekan tombol apapun untuk kembali ke menu"
+display_menu
+}
+
+# Display menu function
+display_menu() {
+    clear
+    
+    
+    echo -e "${green}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+    echo -e "${green}║                            INFORMASI SISTEM                           ║${neutral}"
+    echo -e "${green}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+    echo -e "    ${white}SISTEM    : $(grep -w PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"' | head -c25)${neutral}"
+    echo -e "    ${white}RAM       : $(free -m | awk 'NR==2 {printf "%s / %s MB", $3, $2}')${neutral}"
+    echo -e "    ${white}UPTIME    : $(uptime -p 2>/dev/null | cut -d ' ' -f 2-4 | head -c25)${neutral}"
+    echo -e "    ${white}CPU CORE  : $(nproc 2>/dev/null || echo "N/A") Core${neutral}"
+    echo -e "    ${white}ISP       : $(curl -s ipinfo.io/org 2>/dev/null | cut -d ' ' -f 2-3 | head -c25)${neutral}"
+    echo -e "    ${white}IP PUBLIK : $(curl -s ipv4.icanhazip.com 2>/dev/null || echo "Unable to detect")${neutral}"
+    echo -e "    ${white}DOMAIN    : $(head -n1 /etc/xray/domain 2>/dev/null | head -c25)${neutral}"
+    echo -e "${green}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+    echo -e ""
+
+    
+    echo -e "${green}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+    echo -e "${green}║                          NOTIFIKASI TELEGRAM                          ║${neutral}"
+    echo -e "${green}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+    # Status Bot Telegram (hanya tampilkan Aktif / Tidak Aktif)
+    bot_token_status="${red}Tidak Aktif${neutral}"
+    chat_id_status="${red}Tidak Aktif${neutral}"
+    need_setup_msg=""
+    if [ -f /root/.vars ]; then
+        # shellcheck disable=SC1091
+        source /root/.vars 2>/dev/null
+        [ -n "${bot_token}" ] && bot_token_status="${green}Aktif${neutral}"
+        [ -n "${telegram_id}" ] && chat_id_status="${green}Aktif${neutral}"
+    else
+        need_setup_msg="${yellow}Belum dikonfigurasi. Gunakan menu [6] untuk setup bot notifikasi.${neutral}"
+    fi
+    # Jika file ada tapi salah satu belum aktif
+    if [ -z "${need_setup_msg}" ]; then
+        if [ "${bot_token_status}" != "${green}Aktif${neutral}" ] || [ "${chat_id_status}" != "${green}Aktif${neutral}" ]; then
+            need_setup_msg="${yellow}Bot notifikasi belum lengkap. Gunakan menu [6] untuk konfigurasi.${neutral}"
+        fi
+    fi
+    echo -e "               ${white}BOT Token : ${bot_token_status}${neutral}  ║  ${white}CHAT ID : ${chat_id_status}${neutral}"
+    if [ -n "   ${need_setup_msg}" ]; then
+        echo -e "   ${need_setup_msg}"
+    fi
+    echo -e "${green}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+    echo -e ""
+
+
+    echo -e "${cyan}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+    echo -e "${cyan}║                            STATUS LAYANAN                             ║${neutral}"
+    echo -e "${cyan}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+    echo -e "           ${white}NGINX   : $(cek_status nginx)   ║  SSH/OVPN	: $(cek_status ssh)     ║  DROPBEAR : $(cek_status dropbear)"
+    echo -e "           ${white}HAPROXY : $(cek_status haproxy)   ║  XRAY	: $(cek_status vmess@config)"
+    echo -e "${cyan}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+    echo -e ""
+
+    echo -e "${blue}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+    echo -e "${blue}║                             JUMLAH AKUN                               ║${neutral}"
+    echo -e "${blue}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+    echo -e "       SSH/OPENVPN : ${yellow}$(printf "%2s" "$ssh")${neutral} Akun    ║    SHADOWSOCKS : ${yellow}$(printf "%2s" "$ss")${neutral} Akun"
+    echo -e "       VMESS XRAY  : ${yellow}$(printf "%2s" "$vm")${neutral} Akun    ║    TROJAN XRAY : ${yellow}$(printf "%2s" "$tr")${neutral} Akun"
+    echo -e "       VLESS XRAY  : ${yellow}$(printf "%2s" "$vl")${neutral} Akun    ║"
+    echo -e "${blue}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+    echo -e ""
+    
+    echo -e "${magenta}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+    echo -e "${magenta}║                              MENU UTAMA                               ║${neutral}"
+    echo -e "${magenta}╠═══════════════════════════════════════════════════════════════════════╣${neutral}"
+    echo -e ""
+    echo -e "       ${green}[1]${neutral} Kelola SSH/OpenVPN    ║     ${green}[5]${neutral} Kelola Shadowsocks"
+    echo -e "       ${green}[2]${neutral} Kelola VMess          ║     ${green}[6]${neutral} Setup Bot Notifikasi"
+    echo -e "       ${green}[3]${neutral} Kelola VLess          ║     ${green}[7]${neutral} Menu Bot Telegram (Segera)"
+    echo -e "       ${green}[4]${neutral} Kelola Trojan         ║     ${green}[8]${neutral} Menu Features"
+    echo -e ""
+    echo -e "                          ${red}[x]${neutral} Keluar dari Panel"
+    echo -e "${magenta}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+    echo -e ""
+    
+    echo -e "${gray}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+    echo -e "  ══════════    ${green}Versi:${neutral} 1.0.1   ║   ${green}Developer:${neutral} FST${neutral}    ═══════════"
+    echo -e "${gray}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+    echo -e ""
+    
+    echo -ne "${yellow}Pilih menu [1-8 atau x]: ${neutral}"
+    read choice
+    
+    echo -e ""
+    case $choice in
+        1 | 01) 
+            echo -e "${cyan}Membuka menu SSH/OpenVPN...${neutral}"
+            menussh 
+            ;;
+        2 | 02) 
+            echo -e "${cyan}Membuka menu VMess...${neutral}"
+            menuvmess 
+            ;;
+        3 | 03) 
+            echo -e "${cyan}Membuka menu VLess...${neutral}"
+            menuvless 
+            ;;
+        4 | 04) 
+            echo -e "${cyan}Membuka menu Trojan...${neutral}"
+            menutrojan 
+            ;;
+        5 | 05) 
+            echo -e "${cyan}Membuka menu Shadowsocks...${neutral}"
+            menushadowsocks 
+            ;;
+        6 | 06) 
+            echo -e "${cyan}Setup Bot Telegram...${neutral}"
+            setup_bot_telegram 
+            ;;
+        7 | 07) 
+            if [ ! -f /usr/bin/botserver ]; then
+                echo -e "${red}Error: Bot server belum diinstall. Silahkan install terlebih dahulu.${neutral}"
+                echo -e "${yellow}Kembali ke menu utama dalam 5 detik...${neutral}"
+                sleep 5
+                display_menu
+                return
+            fi
+            echo -e "${cyan}Membuka menu Bot Telegram...${neutral}"
+            menu_bot_telegram 
+            display_menu 
+            ;;
+        8 | 08) 
+            echo -e "${cyan}Membuka menu Features...${neutral}"
+            features
+            display_menu
+            ;;
+        x | X)
+            echo -e ""
+            echo -e "${green}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
+            echo -e "${green}║                    Terima kasih telah menggunakan                     ║${neutral}"
+            echo -e "${green}║                       ALRESCHA79 VPN PANEL                            ║${neutral}"
+            echo -e "${green}║                                                                       ║${neutral}"
+            echo -e "${green}║                 📱 Telegram: https://t.me/FST                  ║${neutral}"
+            echo -e "${green}║                                                                       ║${neutral}"
+            echo -e "${green}║            Ketik perintah ${yellow}menu${green} untuk membuka panel kembali            ║${neutral}"
+            echo -e "${green}╚═══════════════════════════════════════════════════════════════════════╝${neutral}"
+            echo -e ""
+            exit 0
+            ;;
+        *)
+            echo -e ""
+            echo -e "${red}Pilihan tidak valid! Silahkan pilih menu yang tersedia.${neutral}"
+            echo -e "${yellow}Tekan Enter untuk mencoba lagi...${neutral}"
+            read
+            display_menu
+            ;;
+    esac
+}
+
+display_menu
