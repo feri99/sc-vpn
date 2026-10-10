@@ -50,7 +50,7 @@ apt-get update && \
 apt-get --reinstall --fix-missing install -y whois bzip2 gzip coreutils wget screen nscd build-essential && \
 wget --inet4-only --no-check-certificate -O setup.sh https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/setup.sh && \
 chmod +x setup.sh && \
-screen -S setup ./setup.sh
+./setup.sh
 ```
 
 Lihat [Panduan Instalasi](./install.md) untuk instruksi lengkap.
@@ -163,7 +163,7 @@ Otomatis reboot VPS setiap hari pada jam 05:00 WIB. Anda dapat mengubah jadwal i
 | Telegram | [Hubungi di Telegram](https://t.me/FST) |
 | Bot Telegram | [bot-vpn](https://github.com/feri99/bot-vpn) |
 | Web Dashboard VPN | [dashboard-vpn](https://github.com/feri99/dashboard-vpn) |
-| Email | [Kirim Email](mailto:FST) |
+| Email | [Kirim Email](mailto:) |
 
 ---
 

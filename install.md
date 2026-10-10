@@ -59,7 +59,7 @@ apt-get update && \
 apt-get --reinstall --fix-missing install -y whois bzip2 gzip coreutils wget screen nscd build-essential && \
 wget --inet4-only --no-check-certificate -O setup.sh https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/setup.sh && \
 chmod +x setup.sh && \
-./setup.sh
+screen -S setup ./setup.sh
 ```
 
 ### ⚠️ Informasi Penting
@@ -213,7 +213,7 @@ rm -rf /tmp/cron.txt
 Butuh bantuan / melaporkan bug:
 
 [![Telegram: Klik di Sini](https://img.shields.io/badge/Telegram-Klik%20Di%20Sini-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/FST)
-[![Email: Klik di Sini](https://img.shields.io/badge/Email-Klik%20Di%20Sini-D14836?style=for-the-badge&logo=gmail&logoColor=white)](mailto:FST)
+[![Email: Klik di Sini](https://img.shields.io/badge/Email-Klik%20Di%20Sini-D14836?style=for-the-badge&logo=gmail&logoColor=white)](mailto:)
 
 ---
 

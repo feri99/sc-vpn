@@ -2,6 +2,7 @@
 
 # VPN Panel Uninstaller Script
 # This script removes all components installed by the setup.sh script
+# Author: FST Panel VPN
 
 # Color definitions
 green="\e[38;5;82m"

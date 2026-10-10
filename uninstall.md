@@ -142,7 +142,7 @@ Jika Anda memiliki backup dan ingin restore:
 Jika mengalami masalah:
 
 - 💬 **Telegram**: [@FST](https://t.me/FST)
-- 📧 **Email**: FST
+- 📧 **Email**: 
 - 🐛 **Issues**: [GitHub Issues](https://github.com/feri99/sc-vpn/issues)
 
 ## 📄 Lisensi

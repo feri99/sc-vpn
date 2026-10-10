@@ -7,7 +7,7 @@ NC='\e[0m'
 clear
 
 echo -e "${blue}─────────────────────────────────────────${neutral}"
-echo -e "${green}   Install Add package FST VPN       ${neutral}"
+echo -e "${green}   Install Add package FST       ${neutral}"
 echo -e "${blue}─────────────────────────────────────────${neutral}"
 
 
