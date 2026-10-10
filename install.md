@@ -91,7 +91,7 @@ Jika saat proses instalasi (Langkah 1) sesi terminal terputus, jangan jalankan u
   curl -o /usr/bin/features https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/project/features
   ```
 
-- Jika ada masalah, silakan hubungi saya di Telegram: [@Alrescha79](https://t.me/Alrescha79)
+- Jika ada masalah, silakan hubungi saya di Telegram: [@FST](https://t.me/FST)
 
 ---
 
@@ -212,8 +212,8 @@ rm -rf /tmp/cron.txt
 
 Butuh bantuan / melaporkan bug:
 
-[![Telegram: Klik di Sini](https://img.shields.io/badge/Telegram-Klik%20Di%20Sini-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/Alrescha79)
-[![Email: Klik di Sini](https://img.shields.io/badge/Email-Klik%20Di%20Sini-D14836?style=for-the-badge&logo=gmail&logoColor=white)](mailto:anggun@cakson.my.id)
+[![Telegram: Klik di Sini](https://img.shields.io/badge/Telegram-Klik%20Di%20Sini-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/FST)
+[![Email: Klik di Sini](https://img.shields.io/badge/Email-Klik%20Di%20Sini-D14836?style=for-the-badge&logo=gmail&logoColor=white)](mailto:FST)
 
 ---
 
@@ -221,6 +221,6 @@ Butuh bantuan / melaporkan bug:
 
 Proyek ini dilisensikan di bawah MIT License - lihat berkas [LICENSE](./LICENSE).
 
-Copyright © 2025 [Alrescha79](https://github.com/feri99)
+Copyright © 2025 [FST](https://github.com/feri99)
 
 ---

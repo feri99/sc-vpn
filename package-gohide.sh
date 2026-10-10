@@ -20,7 +20,7 @@ wget -q -O /usr/local/bin/add-ssh "https://raw.githubusercontent.com/feri99/sc-v
 clear
 
 echo -e "${blue}─────────────────────────────────────────${neutral}"
-echo -e "${green} Install delete package Alrescha79      ${neutral}"
+echo -e "${green} Install delete package FST      ${neutral}"
 echo -e "${blue}─────────────────────────────────────────${neutral}"
 cd
 wget -q -O /usr/local/bin/del-vmess "https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/project/dellaccvmess.sh" && chmod +x /usr/local/bin/del-vmess
@@ -33,7 +33,7 @@ clear
 
 
 echo -e "${blue}─────────────────────────────────────────${neutral}"
-echo -e "${green} Install Check  package Alrescha79      ${neutral}"
+echo -e "${green} Install Check  package FST      ${neutral}"
 echo -e "${blue}─────────────────────────────────────────${neutral}"
 cd
 
@@ -46,7 +46,7 @@ wget -q -O /usr/local/bin/check-vmess "https://raw.githubusercontent.com/feri99/
 
 
 echo -e "${blue}─────────────────────────────────────────${neutral}"
-echo -e "${green} Install renew package Alrescha79      ${neutral}"
+echo -e "${green} Install renew package FST      ${neutral}"
 echo -e "${blue}─────────────────────────────────────────${neutral}"
 cd
  

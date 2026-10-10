@@ -1,6 +1,6 @@
 # VPN Panel Uninstaller
 
-Script uninstaller untuk menghapus semua komponen yang diinstal oleh **Alrescha79 VPN Panel**.
+Script uninstaller untuk menghapus semua komponen yang diinstal oleh **FST VPN Panel**.
 
 ## ✨ Fitur
 
@@ -101,7 +101,7 @@ wget -O uninstaller.sh https://raw.githubusercontent.com/feri99/sc-vpn/main/unin
 
 - ✅ Ubuntu 20.04, 22.04, 24.04
 - ✅ Debian 10, 11, 12, 13
-- ✅ Tested dengan Alrescha79 VPN Panel setup script
+- ✅ Tested dengan FST VPN Panel setup script
 
 ## 🔄 Restore dari Backup
 
@@ -141,12 +141,12 @@ Jika Anda memiliki backup dan ingin restore:
 
 Jika mengalami masalah:
 
-- 💬 **Telegram**: [@Alrescha79](https://t.me/Alrescha79)
-- 📧 **Email**: anggun@cakson.my.id
+- 💬 **Telegram**: [@FST](https://t.me/FST)
+- 📧 **Email**: FST
 - 🐛 **Issues**: [GitHub Issues](https://github.com/feri99/sc-vpn/issues)
 
 ## 📄 Lisensi
 
-Copyright (C) 2025 [Alrescha79](https://github.com/feri99). All rights reserved.
+Copyright (C) 2025 [FST](https://github.com/feri99). All rights reserved.
 
 ---

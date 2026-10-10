@@ -26,7 +26,7 @@ clear
 
 echo -e "${red}╔═══════════════════════════════════════════════════════════════════════════╗${neutral}"
 echo -e "${red}║                            UNINSTALLER VPN PANEL                          ║${neutral}"
-echo -e "${red}║                              Alrescha79 Script                            ║${neutral}"
+echo -e "${red}║                              FST Script                            ║${neutral}"
 echo -e "${red}╚═══════════════════════════════════════════════════════════════════════════╝${neutral}"
 echo -e ""
 echo -e "${yellow}PERINGATAN: Script ini akan menghapus SEMUA komponen VPN Panel!${neutral}"

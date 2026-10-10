@@ -1,6 +1,6 @@
 # ⚡ Panel VPN Auto Installer (Xray / OVPN / SSH / SlowDNS)
 
-![Panel VPN Auto Installer: Xray | OVPN | SSH | SlowDNS](https://readme-typing-svg.demolab.com?font=Capriola&size=40&duration=4000&pause=450&color=F70069&background=FFFFAA00&center=true&random=false&width=800&height=100&lines=Panel+VPN+Auto+Installer;Xray+%7C+OVPN+%7C+SSH+%7C+SlowDNS;by+Alrescha79)
+![Panel VPN Auto Installer: Xray | OVPN | SSH | SlowDNS](https://readme-typing-svg.demolab.com?font=Capriola&size=40&duration=4000&pause=450&color=F70069&background=FFFFAA00&center=true&random=false&width=800&height=100&lines=Panel+VPN+Auto+Installer;Xray+%7C+OVPN+%7C+SSH+%7C+SlowDNS;by+FST)
 
 (EN) This repository provides an automated system for multi-protocol VPN/SSH account installation and management, complete with modular scripts and account creation / checking / renewal / deletion utilities.
 
@@ -160,10 +160,10 @@ Otomatis reboot VPS setiap hari pada jam 05:00 WIB. Anda dapat mengubah jadwal i
 
 | Kanal | Link |
 |-------|------|
-| Telegram | [Hubungi di Telegram](https://t.me/Alrescha79) |
+| Telegram | [Hubungi di Telegram](https://t.me/FST) |
 | Bot Telegram | [bot-vpn](https://github.com/feri99/bot-vpn) |
 | Web Dashboard VPN | [dashboard-vpn](https://github.com/feri99/dashboard-vpn) |
-| Email | [Kirim Email](mailto:anggun@cakson.my.id) |
+| Email | [Kirim Email](mailto:FST) |
 
 ---
 
@@ -171,6 +171,6 @@ Otomatis reboot VPS setiap hari pada jam 05:00 WIB. Anda dapat mengubah jadwal i
 
 MIT License – lihat [LICENSE](./LICENSE).
 
-Copyright (C) 2025 [Alrescha79](https://github.com/feri99). All rights reserved.
+Copyright (C) 2025 [FST](https://github.com/feri99). All rights reserved.
 
 ---
