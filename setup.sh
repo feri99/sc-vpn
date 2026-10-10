@@ -1245,7 +1245,7 @@ echo -e "${blue}═════════════════════�
 
 wget https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/package-gohide.sh && chmod +x package-gohide.sh && ./package-gohide.sh
 cd 
-rm -rf package-gohide.sh
+rm -rf *.sh
 
 
 
