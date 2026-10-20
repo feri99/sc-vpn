@@ -872,6 +872,12 @@ else
     echo -e "${red}Failed to download openvpn.zip${neutral}"
 fi
 
+mkdir -p /var/log/xray
+touch /var/log/xray/access.log /var/log/xray/error.log
+chown -R www-data:www-data /var/log/xray
+chmod 755 /var/log/xray
+chmod 644 /var/log/xray/access.log /var/log/xray/error.log
+
 # Generate OpenVPN client configs
 cat >/etc/openvpn/client-tcp.ovpn <<-EOF
 auth-user-pass
