@@ -1061,7 +1061,7 @@ RestartPreventExitStatus=23"
 wanted_by="WantedBy=multi-user.target"
 after="After=network-online.target nss-lookup.target"
 wants="Wants=network-online.target"
-documentation="Documentation=https://t.me/gerhanatunnell"
+documentation="Documentation=https://t.me/FST"
 
 create_service() {
     local name=$1
@@ -1085,15 +1085,15 @@ ${limits}
 ${wanted_by}
 EOF
 }
-create_service "vmess" "GerhanaTunnel Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/vmess/config.json"
-create_service "vless" "GerhanaTunnel Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/vless/config.json"
-create_service "trojan" "GerhanaTunnel Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/trojan/config.json"
-create_service "shadowsocks" "GerhanaTunnel Server Shadowsocks Instance" "/usr/local/bin/xray run -config /etc/xray/shadowsocks/config.json"
+create_service "vmess" "FST Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/vmess/config.json"
+create_service "vless" "FST Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/vless/config.json"
+create_service "trojan" "FST Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/trojan/config.json"
+create_service "shadowsocks" "FST Server Shadowsocks Instance" "/usr/local/bin/xray run -config /etc/xray/shadowsocks/config.json"
 
 cat >/etc/systemd/system/xray@.service.d/10-donot_touch_single_conf.conf <<EOF
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
+ExecStart=/usr/local/bin/xray run -config /etc/xray/%i.json
 EOF
 
 sudo systemctl daemon-reload
@@ -1108,8 +1108,8 @@ sudo systemctl daemon-reload
 
 cat >/etc/systemd/system/ws.service <<EOF
 [Unit]
-Description=Python Proxy FATKAY
-Documentation=https://t.me/fatkay
+Description=Python Proxy FST
+Documentation=https://t.me/FST
 ${after}
 [Service]
 Type=simple
@@ -1144,7 +1144,7 @@ EOF
 cat >/etc/systemd/system/limitip.service <<EOF
 [Unit]
 Description=Limit IP Usage Xray Service
-Documentation=https://t.me/gerhanatunnel
+Documentation=https://t.me/FST
 After=syslog.target network-online.target
 [Service]
 User=root
@@ -1158,7 +1158,7 @@ EOF
 cat >/etc/systemd/system/limitquota.service <<EOF
 [Unit]
 Description=Limit Quota Usage Xray Service
-Documentation=https://t.me/gerhanatunnel
+Documentation=https://t.me/FST
 After=syslog.target network-online.target
 [Service]
 User=root
@@ -1172,7 +1172,7 @@ EOF
 cat >/etc/systemd/system/badvpn.service <<EOF
 [Unit]
 Description=BadVPN UDP Service
-Documentation=https://t.me/gerhanatunnel
+Documentation=https://t.me/FST
 After=syslog.target network-online.target
 [Service]
 User=root
