@@ -848,7 +848,7 @@ fi
 domain=$(cat /etc/xray/domain)
 /root/.acme.sh/acme.sh --upgrade --auto-upgrade
 /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-/root/.acme.sh/acme.sh --issue -d $domain --standalone -k ec-256
+/root/.acme.sh/acme.sh --issue -d $domain --standalone -k ec-256 --force
 /root/.acme.sh/acme.sh --installcert -d $domain --fullchainpath /etc/xray/xray.crt --keypath /etc/xray/xray.key --ecc
 cat /etc/xray/xray.crt /etc/xray/xray.key | tee /etc/haproxy/yha.pem
 chown www-data:www-data /etc/xray/xray.key
