@@ -296,11 +296,11 @@ cat >/var/www/html/vmess-$user.txt <<-END
 ══════════════════════════════════════════════════════════════════════
 # Vmess Account Links
 ══════════════════════════════════════════════════════════════════════
-TLS Link : vmess://${uuid}@${domain}:443?encryption=auto&security=tls&sni=${domain}&type=ws&host=${domain}&path=%2Fwhatever%2Fvmess#${user}
+TLS Link : vmess://$(base64 -w 0 /etc/xray/vmess/$user-tls.json 2>/dev/null)
 ══════════════════════════════════════════════════════════════════════
-Non-TLS Link : vmess://${uuid}@${domain}:80?encryption=auto&security=none&type=ws&host=${domain}&path=%2Fwhatever%2Fvmess#${user}
+Non-TLS Link : vmess://$(base64 -w 0 /etc/xray/vmess/$user-non.json 2>/dev/null)
 ══════════════════════════════════════════════════════════════════════
-GRPC Link : vmess://${uuid}@${domain}:443?encryption=auto&security=tls&type=grpc&serviceName=vmess-grpc&sni=${domain}#${user}
+GRPC Link : vmess://$(base64 -w 0 /etc/xray/vmess/$user-grpc.json 2>/dev/null)
 ══════════════════════════════════════════════════════════════════════
 
 END
@@ -312,10 +312,10 @@ if [ ! -f "/var/www/html/vmess-$user.txt" ]; then
     exit 1
 fi
 
-# Generate Vmess links
-vmess_tls="vmess://${uuid}@${domain}:443?encryption=auto&security=tls&sni=${domain}&type=ws&host=${domain}&path=%2Fwhatever%2Fvmess#${user}"
-vmess_non="vmess://${uuid}@${domain}:80?encryption=auto&security=none&type=ws&host=${domain}&path=%2Fwhatever%2Fvmess#${user}"
-vmess_grpc="vmess://${uuid}@${domain}:443?encryption=auto&security=tls&type=grpc&serviceName=vmess-grpc&sni=${domain}#${user}"
+# Generate Vmess links (base64 format - required by most VMess clients)
+vmess_tls="vmess://$(base64 -w 0 /etc/xray/vmess/$user-tls.json)"
+vmess_non="vmess://$(base64 -w 0 /etc/xray/vmess/$user-non.json)"
+vmess_grpc="vmess://$(base64 -w 0 /etc/xray/vmess/$user-grpc.json)"
 
 # Restart service
 if ! systemctl restart vmess@config; then
