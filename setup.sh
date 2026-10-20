@@ -1079,15 +1079,15 @@ ${limits}
 ${wanted_by}
 EOF
 }
-create_service "vmess" "GerhanaTunnel Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/vmess/%i.json"
-create_service "vless" "GerhanaTunnel Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/vless/%i.json"
-create_service "trojan" "GerhanaTunnel Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/trojan/%i.json"
-create_service "shadowsocks" "GerhanaTunnel Server Shadowsocks Instance" "/usr/local/bin/xray run -config /etc/xray/shadowsocks/%i.json"
+create_service "vmess" "GerhanaTunnel Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/vmess/config.json"
+create_service "vless" "GerhanaTunnel Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/vless/config.json"
+create_service "trojan" "GerhanaTunnel Server Xray Instance" "/usr/local/bin/xray run -config /etc/xray/trojan/config.json"
+create_service "shadowsocks" "GerhanaTunnel Server Shadowsocks Instance" "/usr/local/bin/xray run -config /etc/xray/shadowsocks/config.json"
 
 cat >/etc/systemd/system/xray@.service.d/10-donot_touch_single_conf.conf <<EOF
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/xray run -config /etc/xray/%i.json
+ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
 EOF
 
 sudo systemctl daemon-reload
