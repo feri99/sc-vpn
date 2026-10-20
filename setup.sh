@@ -486,49 +486,89 @@ else
     echo -e "${red}Unsupported OS. Exiting.${neutral}"
     exit 1
 fi
-# Install haproxy sesuai OS dan versi
-if [[ $os_id == "ubuntu" && $os_version == "18.04" ]]; then
-    add-apt-repository -y ppa:vbernat/haproxy-2.6 || echo -e "${red}Failed to add haproxy repository${neutral}"
-    sudo apt update -y || echo -e "${red}Failed to update package list${neutral}"
-    apt-get install -y haproxy=2.6.* || echo -e "${red}Failed to install haproxy${neutral}"
 
-elif [[ $os_id == "ubuntu" && $os_version == "20.04" ]]; then
-    add-apt-repository -y ppa:vbernat/haproxy-2.9 || echo -e "${red}Failed to add haproxy repository${neutral}"
-    sudo apt update -y || echo -e "${red}Failed to update package list${neutral}"
-    apt-get install -y haproxy=2.9.* || echo -e "${red}Failed to install haproxy${neutral}"
+# Install HAProxy sesuai OS dan versi
+if [[ "$os_id" == "ubuntu" && "$os_version" == "18.04" ]]; then
+    add-apt-repository -y ppa:vbernat/haproxy-2.6
+    apt-get update
+    apt-get install -y 'haproxy=2.6.*'
 
-elif [[ $os_id == "ubuntu" && $os_version == "22.04" ]]; then
-    add-apt-repository -y ppa:vbernat/haproxy-3.0 || echo -e "${red}Failed to add haproxy repository${neutral}"
-    sudo apt update -y || echo -e "${red}Failed to update package list${neutral}"
-    apt-get install -y haproxy=3.0.* || echo -e "${red}Failed to install haproxy${neutral}"
+elif [[ "$os_id" == "ubuntu" && "$os_version" == "20.04" ]]; then
+    add-apt-repository -y ppa:vbernat/haproxy-2.9
+    apt-get update
+    apt-get install -y 'haproxy=2.9.*'
 
-elif [[ $os_id == "ubuntu" && $os_version == "24.04" ]]; then
-    add-apt-repository -y ppa:vbernat/haproxy-3.0 || echo -e "${red}Failed to add haproxy repository${neutral}"
-    sudo apt update -y || echo -e "${red}Failed to update package list${neutral}"
-    apt-get install -y haproxy=3.0.* || echo -e "${red}Failed to install haproxy${neutral}"
+elif [[ "$os_id" == "ubuntu" && "$os_version" == "22.04" ]]; then
+    add-apt-repository -y ppa:vbernat/haproxy-3.0
+    apt-get update
+    apt-get install -y 'haproxy=3.0.*'
 
-elif [[ $os_id == "debian" && $os_version == "10" ]]; then
-    curl https://haproxy.debian.net/bernat.debian.org.gpg | gpg --dearmor >/usr/share/keyrings/haproxy.debian.net.gpg || echo -e "${red}Failed to add haproxy repository${neutral}"
-    echo "deb [signed-by=/usr/share/keyrings/haproxy.debian.net.gpg] http://haproxy.debian.net buster-backports-2.6 main" >/etc/apt/sources.list.d/haproxy.list || echo -e "${red}Failed to add haproxy repository${neutral}"
-    sudo apt update -y || echo -e "${red}Failed to update package list${neutral}"
-    apt-get install -y haproxy=2.6.* || echo -e "${red}Failed to install haproxy${neutral}"
+elif [[ "$os_id" == "ubuntu" && "$os_version" == "24.04" ]]; then
+    add-apt-repository -y ppa:vbernat/haproxy-3.0
+    apt-get update
+    apt-get install -y 'haproxy=3.0.*'
 
-elif [[ $os_id == "debian" && $os_version == "11" ]]; then
-    curl https://haproxy.debian.net/bernat.debian.org.gpg | gpg --dearmor >/usr/share/keyrings/haproxy.debian.net.gpg || echo -e "${red}Failed to add haproxy repository${neutral}"
-    echo "deb [signed-by=/usr/share/keyrings/haproxy.debian.net.gpg] http://haproxy.debian.net bullseye-backports-3.0 main" >/etc/apt/sources.list.d/haproxy.list || echo -e "${red}Failed to add haproxy repository${neutral}"
-    sudo apt update -y || echo -e "${red}Failed to update package list${neutral}"
-    apt-get install -y haproxy=3.0.* || echo -e "${red}Failed to install haproxy${neutral}"
+# Ubuntu 25.10
+elif [[ "$os_id" == "ubuntu" && "$os_version" == "25.10" ]]; then
+    add-apt-repository -y ppa:vbernat/haproxy-3.0
+    apt-get update
+    apt-get install -y haproxy
 
-elif [[ $os_id == "debian" && $os_version == "12" ]]; then
-    curl https://haproxy.debian.net/bernat.debian.org.gpg | gpg --dearmor >/usr/share/keyrings/haproxy.debian.net.gpg || echo -e "${red}Failed to add haproxy repository${neutral}"
-    echo "deb [signed-by=/usr/share/keyrings/haproxy.debian.net.gpg] http://haproxy.debian.net bookworm-backports-3.0 main" >/etc/apt/sources.list.d/haproxy.list || echo -e "${red}Failed to add haproxy repository${neutral}"
-    sudo apt update -y || echo -e "${red}Failed to update package list${neutral}"
-    apt-get install -y haproxy=3.0.* || echo -e "${red}Failed to install haproxy${neutral}"
+# Ubuntu 26.04
+elif [[ "$os_id" == "ubuntu" && "$os_version" == "26.04" ]]; then
+    add-apt-repository -y ppa:vbernat/haproxy-3.2
+    apt-get update
+    apt-get install -y haproxy
+
+# Debian 10
+elif [[ "$os_id" == "debian" && "$os_version" == "10" ]]; then
+    curl -fsSL https://haproxy.debian.net/bernat.debian.org.gpg \
+        | gpg --dearmor -o /usr/share/keyrings/haproxy.debian.net.gpg
+    echo "deb [signed-by=/usr/share/keyrings/haproxy.debian.net.gpg] http://haproxy.debian.net buster-backports-2.6 main" \
+        > /etc/apt/sources.list.d/haproxy.list
+    apt-get update
+    apt-get install -y 'haproxy=2.6.*'
+
+# Debian 11
+elif [[ "$os_id" == "debian" && "$os_version" == "11" ]]; then
+    curl -fsSL https://haproxy.debian.net/bernat.debian.org.gpg \
+        | gpg --dearmor -o /usr/share/keyrings/haproxy.debian.net.gpg
+    echo "deb [signed-by=/usr/share/keyrings/haproxy.debian.net.gpg] http://haproxy.debian.net bullseye-backports-3.0 main" \
+        > /etc/apt/sources.list.d/haproxy.list
+    apt-get update
+    apt-get install -y 'haproxy=3.0.*'
+
+# Debian 12
+elif [[ "$os_id" == "debian" && "$os_version" == "12" ]]; then
+    curl -fsSL https://haproxy.debian.net/bernat.debian.org.gpg \
+        | gpg --dearmor -o /usr/share/keyrings/haproxy.debian.net.gpg
+    echo "deb [signed-by=/usr/share/keyrings/haproxy.debian.net.gpg] http://haproxy.debian.net bookworm-backports-3.0 main" \
+        > /etc/apt/sources.list.d/haproxy.list
+    apt-get update
+    apt-get install -y 'haproxy=3.0.*'
+
+# Debian 13
+elif [[ "$os_id" == "debian" && "$os_version" == "13" ]]; then
+    curl -fsSL https://haproxy.debian.net/haproxy-archive-keyring.gpg \
+        -o /usr/share/keyrings/haproxy-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/haproxy-archive-keyring.gpg] https://haproxy.debian.net trixie-backports-3.2 main" \
+        > /etc/apt/sources.list.d/haproxy.list
+    apt-get update
+    apt-get install -y 'haproxy=3.2.*'
 
 else
-    echo -e "${red}Unsupported OS. Exiting.${neutral}"
+    echo -e "${red}Unsupported OS: ${os_id} ${os_version}${neutral}"
     exit 1
 fi
+
+# Periksa hasil instalasi
+if command -v haproxy >/dev/null 2>&1; then
+    haproxy -vv | head -n 2
+else
+    echo -e "${red}HAProxy installation failed${neutral}"
+    exit 1
+fi
+
 loading_bar() {
     local total=$1
     local current=0
