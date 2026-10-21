@@ -94,6 +94,7 @@ vpn_services=(
     "dropbear.service"  # Dropbear bukan SSH utama
     "openvpn.service"
     "xray.service"
+    "fst-api.service"
 )
 
 for service in "${vpn_services[@]}"; do
@@ -120,6 +121,7 @@ vpn_service_files=(
     "/etc/systemd/system/xray@.service.d/10-donot_touch_single_conf.conf"
     "/etc/systemd/system/xray@.service.d"
     "/lib/systemd/system/dropbear.service"
+    "/etc/systemd/system/fst-api.service"
 )
 
 for file in "${vpn_service_files[@]}"; do
@@ -129,6 +131,13 @@ for file in "${vpn_service_files[@]}"; do
 done
 
 systemctl daemon-reload
+
+# Remove FST Panel API files
+show_progress "Menghapus FST Panel API..."
+if [ -d "/usr/local/fst-panel" ]; then
+    rm -rf /usr/local/fst-panel && echo -e "  ${green}✓${neutral} Removed /usr/local/fst-panel"
+fi
+rm -f /etc/systemd/system/fst-api.service 2>/dev/null
 
 # Remove cron jobs
 show_progress "Menghapus cron jobs VPN..."
@@ -414,6 +423,7 @@ echo -e "${gray}  ✓ Binary dan executable VPN${neutral}"
 echo -e "${gray}  ✓ Repository VPN${neutral}"
 echo -e "${gray}  ✓ Log VPN${neutral}"
 echo -e "${gray}  ✓ License Monitor System${neutral}"
+echo -e "${gray}  ✓ FST Panel API (Python/Bottle)${neutral}"
 echo -e ""
 echo -e "${green}Yang DIPERTAHANKAN untuk keamanan:${neutral}"
 echo -e "${green}  ✓ SSH service dan konfigurasi${neutral}"

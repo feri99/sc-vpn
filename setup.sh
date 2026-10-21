@@ -1269,6 +1269,73 @@ done
 
 sudo systemctl restart netfilter-persistent
 
+# ============================================================
+# Install FST Panel API (Python + Bottle + systemd)
+# ============================================================
+echo -e "${blue}══════════════════════════════════════════════════════════════════════${neutral}"
+echo -e "${green}                         Install FST Panel API              ${neutral}"
+echo -e "${blue}══════════════════════════════════════════════════════════════════════${neutral}"
+
+FST_API_DIR="/usr/local/fst-panel"
+FST_API_URL="https://raw.githubusercontent.com/feri99/sc-vpn/main/fodder/fst-api.py"
+FST_API_PORT=8880
+
+mkdir -p "$FST_API_DIR"
+
+# Pastikan pip & bottle terpasang
+if ! python3 -c "import bottle" 2>/dev/null; then
+    echo -e "${yellow}Install bottle...${neutral}"
+    python3 -m pip install --upgrade pip -q 2>/dev/null || true
+    python3 -m pip install bottle -q 2>/dev/null || \
+        pip3 install bottle -q 2>/dev/null || \
+        python3 -m pip install --break-system-packages bottle -q 2>/dev/null || true
+fi
+
+if python3 -c "import bottle" 2>/dev/null; then
+    echo -e "${green}Bottle OK${neutral}"
+else
+    echo -e "${red}Gagal install bottle (API mungkin tidak jalan)${neutral}"
+fi
+
+# Download fst-api.py
+if wget -q -O "$FST_API_DIR/fst-api.py" "$FST_API_URL" 2>/dev/null || \
+   curl -fsSL -o "$FST_API_DIR/fst-api.py" "$FST_API_URL" 2>/dev/null; then
+    chmod +x "$FST_API_DIR/fst-api.py"
+    echo -e "${green}fst-api.py berhasil diunduh${neutral}"
+else
+    echo -e "${red}Gagal download fst-api.py dari GitHub${neutral}"
+fi
+
+# Buat systemd service
+cat >/etc/systemd/system/fst-api.service <<EOF
+[Unit]
+Description=FST Panel API (Bottle)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${FST_API_DIR}
+ExecStart=/usr/bin/python3 ${FST_API_DIR}/fst-api.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable fst-api >/dev/null 2>&1
+systemctl restart fst-api
+sleep 1
+if systemctl is-active --quiet fst-api; then
+    echo -e "${green}FST API service berjalan (port ${FST_API_PORT})${neutral}"
+    echo -e "${gray}  Panel: http://$(cat /etc/xray/domain 2>/dev/null || echo IP):${FST_API_PORT}/panel${neutral}"
+    echo -e "${gray}  Login default: fst / fst  |  APIKey: fst${neutral}"
+else
+    echo -e "${yellow}FST API service belum aktif, cek: systemctl status fst-api${neutral}"
+fi
 
 cd
 
