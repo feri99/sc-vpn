@@ -825,12 +825,103 @@ else
     echo -e "${red}Failed to save iptables rules${neutral}"
 fi
 
-# Install Xray
-if ! command -v xray >/dev/null 2>&1; then
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-else
-    echo -e "${green}Xray is already installed, skipping installation${neutral}"
-fi
+# ===================== Install Xray (robust + retry) =====================
+install_xray_binary() {
+    local max_try=3
+    local i=1
+    local ok=0
+
+    # Pastikan unzip tersedia (buat fallback zip)
+    if ! command -v unzip >/dev/null 2>&1; then
+        apt-get install -y unzip >/dev/null 2>&1 || true
+    fi
+
+    # Jika binary ada tapi rusak → hapus
+    if [ -x /usr/local/bin/xray ] || command -v xray >/dev/null 2>&1; then
+        if /usr/local/bin/xray version >/dev/null 2>&1 || xray version >/dev/null 2>&1; then
+            echo -e "${green}Xray sudah terinstall: $(/usr/local/bin/xray version 2>/dev/null | head -1 || xray version 2>/dev/null | head -1)${neutral}"
+            ln -sf /usr/local/bin/xray /usr/bin/xray 2>/dev/null || true
+            return 0
+        else
+            echo -e "${yellow}Xray binary rusak, reinstall...${neutral}"
+            rm -f /usr/local/bin/xray /usr/bin/xray 2>/dev/null || true
+        fi
+    fi
+
+    while [ $i -le $max_try ]; do
+        echo -e "${blue}[Xray] Install percobaan $i/$max_try (script resmi)...${neutral}"
+        if bash -c "$(curl -fsSL --connect-timeout 20 --max-time 180 https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install; then
+            if [ -x /usr/local/bin/xray ] && /usr/local/bin/xray version >/dev/null 2>&1; then
+                ok=1
+                break
+            fi
+        fi
+
+        echo -e "${yellow}[Xray] Script resmi gagal, fallback download binary zip...${neutral}"
+        local arch xray_arch
+        arch=$(uname -m)
+        case "$arch" in
+            x86_64|amd64) xray_arch="64" ;;
+            aarch64|arm64) xray_arch="arm64-v8a" ;;
+            armv7*|armhf) xray_arch="arm32-v7a" ;;
+            *) xray_arch="64" ;;
+        esac
+        local tmp=/tmp/xray-manual-$$
+        rm -rf "$tmp" && mkdir -p "$tmp" /usr/local/share/xray
+        if curl -fsSL --connect-timeout 20 --max-time 180 \
+            -o "$tmp/Xray.zip" \
+            "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${xray_arch}.zip"; then
+            unzip -qo "$tmp/Xray.zip" -d "$tmp" 2>/dev/null || true
+            if [ -f "$tmp/xray" ]; then
+                install -m 755 "$tmp/xray" /usr/local/bin/xray
+                [ -f "$tmp/geoip.dat" ] && cp -f "$tmp/geoip.dat" /usr/local/share/xray/
+                [ -f "$tmp/geosite.dat" ] && cp -f "$tmp/geosite.dat" /usr/local/share/xray/
+            fi
+        fi
+        rm -rf "$tmp"
+        if [ -x /usr/local/bin/xray ] && /usr/local/bin/xray version >/dev/null 2>&1; then
+            ok=1
+            break
+        fi
+        echo -e "${red}[Xray] Percobaan $i gagal, tunggu 5 detik...${neutral}"
+        i=$((i + 1))
+        sleep 5
+    done
+
+    if [ "$ok" -ne 1 ]; then
+        echo -e "${red}FATAL: Xray gagal terinstall setelah $max_try percobaan.${neutral}"
+        echo -e "${yellow}Jalankan manual: bash -c \"\$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)\" @ install${neutral}"
+        exit 1
+    fi
+
+    ln -sf /usr/local/bin/xray /usr/bin/xray 2>/dev/null || true
+    echo -e "${green}Xray OK: $(/usr/local/bin/xray version 2>/dev/null | head -1)${neutral}"
+
+    # Matikan unit default (pakai vmess@config / vless@config dll)
+    systemctl stop xray 2>/dev/null || true
+    systemctl disable xray 2>/dev/null || true
+}
+
+# Siapkan log dir SEBELUM & SESUDAH install (service User=www-data)
+prepare_xray_logs() {
+    # Pastikan user www-data ada
+    if ! id www-data >/dev/null 2>&1; then
+        useradd -r -s /usr/sbin/nologin www-data 2>/dev/null || true
+    fi
+    mkdir -p /var/log/xray
+    touch /var/log/xray/access.log /var/log/xray/error.log
+    chown -R www-data:www-data /var/log/xray
+    chmod 755 /var/log/xray
+    chmod 644 /var/log/xray/access.log /var/log/xray/error.log
+    # Pastikan config dirs writable untuk inject user
+    mkdir -p /etc/xray/vmess /etc/xray/vless /etc/xray/trojan /etc/xray/shadowsocks
+    chmod 755 /etc/xray /etc/xray/vmess /etc/xray/vless /etc/xray/trojan /etc/xray/shadowsocks
+    echo -e "${green}Log & dir Xray siap (/var/log/xray)${neutral}"
+}
+
+prepare_xray_logs
+install_xray_binary
+prepare_xray_logs
 
 if [ ! -d "/root/.acme.sh" ]; then
     mkdir /root/.acme.sh
@@ -872,11 +963,8 @@ else
     echo -e "${red}Failed to download openvpn.zip${neutral}"
 fi
 
-mkdir -p /var/log/xray
-touch /var/log/xray/access.log /var/log/xray/error.log
-chown -R www-data:www-data /var/log/xray
-chmod 755 /var/log/xray
-chmod 644 /var/log/xray/access.log /var/log/xray/error.log
+# Pastikan log Xray lagi sebelum generate config lain / start service
+prepare_xray_logs
 
 # Generate OpenVPN client configs
 cat >/etc/openvpn/client-tcp.ovpn <<-EOF
@@ -1243,6 +1331,14 @@ systemctl enable fail2ban >/dev/null 2>&1
 systemctl restart fail2ban
 
 sudo systemctl daemon-reload
+
+# Final check: binary + log dir sebelum start service
+if [ ! -x /usr/local/bin/xray ]; then
+    echo -e "${red}Xray binary hilang sebelum start service, coba install ulang...${neutral}"
+    install_xray_binary
+fi
+prepare_xray_logs
+
 services=(
     "vmess@config.service"
     "vless@config.service"
