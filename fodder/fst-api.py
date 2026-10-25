@@ -4,11 +4,18 @@ import subprocess, os, json, uuid, datetime, re, base64, hashlib, time, secrets
 
 app = Bottle()
 
+
 # ================== KONFIGURASI ==================
-API_KEY = "fst"
-ADMIN_USER = "fst"
-ADMIN_PASS = "fst"
-SECRET_KEY = secrets.token_hex(32)
+CREDENTIALS_FILE = "/etc/fst-api/credentials.json"
+
+with open(CREDENTIALS_FILE, "r") as f:
+    _credentials = json.load(f)
+
+API_KEY = _credentials["api_key"]
+ADMIN_USER = _credentials["admin_user"]
+ADMIN_PASS = _credentials["admin_pass"]
+SECRET_KEY = _credentials["secret_key"]
+
 PORT = 8880
 PREFIX = "/panel"
 # =================================================
