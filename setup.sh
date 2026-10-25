@@ -891,7 +891,7 @@ install_xray_binary() {
     if [ "$ok" -ne 1 ]; then
         echo -e "${red}FATAL: Xray gagal terinstall setelah $max_try percobaan.${neutral}"
         echo -e "${yellow}Jalankan manual: bash -c \"\$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)\" @ install${neutral}"
-        exit 1
+        
     fi
 
     ln -sf /usr/local/bin/xray /usr/bin/xray 2>/dev/null || true
