@@ -90,44 +90,44 @@ else
 fi
 
 # Update Dellete akun
-log_action "Mengunduh dan memperbarui file delvmess..."
-if curl -fsSL -o /usr/bin/delvmess "${GITHUB_BASE}/project/delvmess"; then
-    chmod +x /usr/bin/delvmess
-    log_action "✓ delvmess berhasil diperbarui"
+log_action "Mengunduh dan memperbarui file dellvmess..."
+if curl -fsSL -o /usr/bin/dellvmess "${GITHUB_BASE}/project/dellvmess"; then
+    chmod +x /usr/bin/dellvmess
+    log_action "✓ dellvmess berhasil diperbarui"
 else
-    log_error "Gagal memperbarui delvmess"
+    log_error "Gagal memperbarui dellvmess"
 fi
 
-log_action "Mengunduh dan memperbarui file delvless..."
-if curl -fsSL -o /usr/bin/delvless "${GITHUB_BASE}/project/delvless"; then
-    chmod +x /usr/bin/delvless
-    log_action "✓ delvless berhasil diperbarui"
+log_action "Mengunduh dan memperbarui file dellvless..."
+if curl -fsSL -o /usr/bin/dellvless "${GITHUB_BASE}/project/dellvless"; then
+    chmod +x /usr/bin/dellvless
+    log_action "✓ dellvless berhasil diperbarui"
 else
-    log_error "Gagal memperbarui delvless"
+    log_error "Gagal memperbarui dellvless"
 fi
 
-log_action "Mengunduh dan memperbarui file deltrojan..."
-if curl -fsSL -o /usr/bin/deltrojan "${GITHUB_BASE}/project/deltrojan"; then
-    chmod +x /usr/bin/deltrojan
-    log_action "✓ deltrojan berhasil diperbarui"
+log_action "Mengunduh dan memperbarui file delltrojan..."
+if curl -fsSL -o /usr/bin/delltrojan "${GITHUB_BASE}/project/delltrojan"; then
+    chmod +x /usr/bin/delltrojan
+    log_action "✓ delltrojan berhasil diperbarui"
 else
-    log_error "Gagal memperbarui deltrojan"
+    log_error "Gagal memperbarui delltrojan"
 fi
 
-log_action "Mengunduh dan memperbarui file delshadowsocks..."
-if curl -fsSL -o /usr/bin/delshadowsocks "${GITHUB_BASE}/project/delshadowsocks"; then
-    chmod +x /usr/bin/delshadowsocks
-    log_action "✓ delshadowsocks berhasil diperbarui"
+log_action "Mengunduh dan memperbarui file dellshadowsocks..."
+if curl -fsSL -o /usr/bin/dellshadowsocks "${GITHUB_BASE}/project/dellshadowsocks"; then
+    chmod +x /usr/bin/dellshadowsocks
+    log_action "✓ dellshadowsocks berhasil diperbarui"
 else
-    log_error "Gagal memperbarui delshadowsocks"
+    log_error "Gagal memperbarui dellshadowsocks"
 fi
 
-log_action "Mengunduh dan memperbarui file delssh..."
-if curl -fsSL -o /usr/bin/delssh "${GITHUB_BASE}/project/delssh"; then
-    chmod +x /usr/bin/delssh
-    log_action "✓ delssh berhasil diperbarui"
+log_action "Mengunduh dan memperbarui file dellssh..."
+if curl -fsSL -o /usr/bin/dellssh "${GITHUB_BASE}/project/dellssh"; then
+    chmod +x /usr/bin/dellssh
+    log_action "✓ dellssh berhasil diperbarui"
 else
-    log_error "Gagal memperbarui delssh"
+    log_error "Gagal memperbarui dellssh"
 fi
 
 # Update renew akun
@@ -221,11 +221,11 @@ declare -A updated_files=(
     ["/usr/bin/checktrojan"]="checktrojan"
     ["/usr/bin/checkshadowsocks"]="checkshadowsocks"
     ["/usr/bin/checkssh"]="checkssh"
-    ["/usr/bin/delvmess"]="delvmess"
-    ["/usr/bin/delvless"]="delvless"
-    ["/usr/bin/deltrojan"]="deltrojan"
-    ["/usr/bin/delshadowsocks"]="delshadowsocks"
-    ["/usr/bin/delssh"]="delssh"
+    ["/usr/bin/dellvmess"]="dellvmess"
+    ["/usr/bin/dellvless"]="dellvless"
+    ["/usr/bin/delltrojan"]="delltrojan"
+    ["/usr/bin/dellshadowsocks"]="dellshadowsocks"
+    ["/usr/bin/dellssh"]="dellssh"
     ["/usr/bin/renewvmess"]="renewvmess"
     ["/usr/bin/renewvless"]="renewvless"
     ["/usr/bin/renewtrojan"]="renewtrojan"
