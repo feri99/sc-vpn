@@ -1402,6 +1402,35 @@ else
     echo -e "${red}Gagal download fst-api.py dari GitHub${neutral}"
 fi
 
+sudo mkdir -p /etc/fst-api
+sudo chmod 700 /etc/fst-api
+
+sudo python3 - <<'PY'
+import json
+import secrets
+import os
+
+path = "/etc/fst-api/credentials.json"
+
+if os.path.exists(path):
+    print("File JSON sudah ada, tidak diubah.")
+    raise SystemExit(0)
+
+data = {
+    "admin_user": "admin_" + secrets.token_hex(8),
+    "admin_pass": secrets.token_urlsafe(32),
+    "api_key": secrets.token_hex(32),
+    "secret_key": secrets.token_hex(32)
+}
+
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f, indent=2)
+
+print("Kredensial berhasil dibuat.")
+print(json.dumps(data, indent=2))
+PY
+
 # Buat systemd service
 cat >/etc/systemd/system/fst-api.service <<EOF
 [Unit]
