@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from bottle import Bottle, request, response, redirect, template
-import subprocess, os, json, uuid, datetime, re, base64, hashlib, time, secrets
+import subprocess, os, json, uuid, datetime, re, base64, hashlib, time, secrets, hmac, shlex, ipaddress
+from functools import wraps
 
 app = Bottle()
 
@@ -8,69 +9,171 @@ app = Bottle()
 # ================== KONFIGURASI ==================
 CREDENTIALS_FILE = "/etc/fst-api/credentials.json"
 
-with open(CREDENTIALS_FILE, "r") as f:
+with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
     _credentials = json.load(f)
 
-API_KEY = _credentials["api_key"]
-ADMIN_USER = _credentials["admin_user"]
-ADMIN_PASS = _credentials["admin_pass"]
-SECRET_KEY = _credentials["secret_key"]
+_required_credentials = ("api_key", "admin_user", "admin_pass", "secret_key")
+if any(not isinstance(_credentials.get(name), str) or not _credentials[name]
+       for name in _required_credentials):
+    raise RuntimeError("Konfigurasi kredensial tidak lengkap atau tipenya tidak valid")
+API_KEY, ADMIN_USER, ADMIN_PASS, SECRET_KEY = (_credentials[name] for name in _required_credentials)
 
 PORT = 8880
 PREFIX = "/panel"
+COOKIE_SECURE = os.environ.get("FST_COOKIE_SECURE", "1").lower() not in ("0", "false", "no")
+SESSION_IDLE_SECONDS = 30 * 60
+SESSION_ABSOLUTE_SECONDS = 12 * 3600
 # =================================================
 
 sessions = {}
 login_attempts = {}
 
+
+def verify_admin_password(candidate):
+    """Terima format hash PBKDF2 atau plaintext lama; plaintext dibandingkan konstan-waktu."""
+    if ADMIN_PASS.startswith("pbkdf2_sha256$"):
+        try:
+            _, iterations, salt, expected = ADMIN_PASS.split("$", 3)
+            iterations = int(iterations)
+            if not (100_000 <= iterations <= 2_000_000):
+                return False
+            actual = hashlib.pbkdf2_hmac("sha256", candidate.encode(), salt.encode(), iterations).hex()
+            return hmac.compare_digest(actual, expected)
+        except (ValueError, TypeError):
+            return False
+    return hmac.compare_digest(candidate.encode(), ADMIN_PASS.encode())
+
+
 def create_session():
-    sid = secrets.token_hex(24)
-    sessions[sid] = {"time": time.time(), "user": ADMIN_USER}
+    sid = secrets.token_urlsafe(32)
+    now = time.time()
+    sessions[sid] = {"created": now, "last_activity": now, "user": ADMIN_USER,
+                     "csrf": secrets.token_urlsafe(32)}
     return sid
+
 
 def check_session():
     sid = request.get_cookie("session_id")
-    if not sid or sid not in sessions:
+    session = sessions.get(sid) if sid else None
+    if not session:
         return False
-    if time.time() - sessions[sid]["time"] > 12 * 3600:
-        del sessions[sid]
+    now = time.time()
+    if (now - session["last_activity"] > SESSION_IDLE_SECONDS or
+            now - session["created"] > SESSION_ABSOLUTE_SECONDS):
+        sessions.pop(sid, None)
         return False
+    session["last_activity"] = now
     return True
 
+
+def csrf_valid():
+    """Origin tidak dibatasi; mutasi tetap butuh token rahasia sesi yang cocok."""
+    sid = request.get_cookie("session_id")
+    session = sessions.get(sid) if sid else None
+    if not session:
+        return False
+    supplied = request.get_header("X-CSRF-Token") or request.forms.get("csrf_token", "")
+    return bool(supplied) and hmac.compare_digest(str(supplied), session["csrf"])
+
+
+def redirect_local(path):
+    """Kirim redirect path-relative agar scheme/host browser tidak diganti oleh upstream HTTP."""
+    if (not isinstance(path, str) or not path.startswith("/") or path.startswith("//")
+            or "\r" in path or "\n" in path):
+        raise ValueError("redirect harus berupa path lokal")
+    response.status = 303
+    response.set_header("Location", path)
+    return ""
+
+
 def require_login(func):
+    @wraps(func)
     def wrapper(*args, **kwargs):
         if not check_session():
-            return redirect(f"{PREFIX}/login")
+            return redirect_local(f"{PREFIX}/login")
         return func(*args, **kwargs)
     return wrapper
 
-def auth_api():
-    key = request.headers.get("APIKey") or request.forms.get("apikey")
-    if request.json:
-        key = key or request.json.get("apikey")
-    return key == API_KEY
 
-def require_auth():
-    """True jika session valid atau API key valid"""
-    return check_session() or auth_api()
+def request_data(include_query=False):
+    data = request.json
+    if isinstance(data, dict):
+        source = data
+    else:
+        source = request.forms
+        if not source and include_query:
+            source = request.query
+    # Bentuk nilai menjadi string; tipe JSON kompleks ditolak sebagai input kosong.
+    return {str(k): (v if isinstance(v, str) else str(v) if isinstance(v, (int, float)) else "")
+            for k, v in source.items()}
+
+
+def auth_api():
+    data = request_data()
+    key = request.get_header("APIKey") or data.get("apikey")
+    return bool(key) and hmac.compare_digest(str(key), API_KEY)
+
+
+def require_auth(mutation=False):
+    """Terima API key, atau sesi browser yang lulus pemeriksaan CSRF untuk mutasi."""
+    if auth_api():
+        return True
+    if not check_session():
+        return False
+    return not mutation or csrf_valid()
+
 
 def json_response(data, status=200):
-    response.content_type = "application/json"
+    response.content_type = "application/json; charset=utf-8"
     response.status = status
     return json.dumps(data, ensure_ascii=False)
 
+
+@app.hook("after_request")
+def add_security_headers():
+    response.set_header("X-Content-Type-Options", "nosniff")
+    response.set_header("X-Frame-Options", "DENY")
+    response.set_header("Referrer-Policy", "no-referrer")
+    response.set_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.set_header("Cache-Control", "no-store, max-age=0")
+    response.set_header("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self' https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline'")
+
+
 def get_domain():
     try:
-        return open("/etc/xray/domain").read().strip()
-    except:
-        return os.popen("hostname -f").read().strip() or "localhost"
-
-def run_cmd(cmd, shell=True):
+        with open("/etc/xray/domain", encoding="utf-8") as f:
+            value = f.read().strip()
+    except OSError:
+        try:
+            result = subprocess.run(["hostname", "-f"], capture_output=True, text=True, timeout=3, check=False)
+            value = result.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            value = "localhost"
+    value = value.strip().rstrip(".")
     try:
-        r = subprocess.run(cmd, shell=shell, capture_output=True, text=True, timeout=30)
+        ipaddress.ip_address(value)
+        return value
+    except ValueError:
+        labels = value.split(".")
+        if (len(value) <= 253 and labels and all(
+                re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                for label in labels)):
+            return value
+        return "localhost"
+
+
+def run_cmd(cmd, input_text=None):
+    """Jalankan perintah tanpa shell; string dipecah menjadi argv, bukan dieksekusi shell."""
+    try:
+        argv = shlex.split(cmd) if isinstance(cmd, str) else list(cmd)
+        if not argv:
+            return 1, "", "Perintah kosong"
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=30,
+                           input=input_text, shell=False, check=False)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except Exception as e:
         return 1, "", str(e)
+
 
 def parse_exp_days_left(exp_str):
     """Hitung sisa hari dari string tanggal (YYYY-MM-DD atau YYYY-MM-DD HH:MM:SS)"""
@@ -83,35 +186,42 @@ def parse_exp_days_left(exp_str):
         delta = exp_dt - datetime.datetime.now()
         days = delta.days
         return max(0, days)
-    except:
+    except (ValueError, TypeError, AttributeError):
         return 0
 
+
 def safe_username(user):
-    return bool(re.match(r"^[a-zA-Z0-9_-]{3,32}$", user))
+    return isinstance(user, str) and bool(re.fullmatch(r"[a-zA-Z0-9_-]{3,32}", user))
 
 # ====================== ROOT / PANEL ======================
 @app.route(PREFIX)
 @app.route(PREFIX + "/")
 def panel_root():
     if check_session():
-        return redirect(f"{PREFIX}/dashboard")
-    return redirect(f"{PREFIX}/login")
+        return redirect_local(f"{PREFIX}/dashboard")
+    return redirect_local(f"{PREFIX}/login")
 
 # ====================== LOGIN ======================
 @app.route(PREFIX + "/login", method=["GET", "POST"])
 def login():
     if check_session():
-        return redirect(f"{PREFIX}/dashboard")
+        return redirect_local(f"{PREFIX}/dashboard")
 
     error = ""
     if request.method == "POST":
+        # Tidak membatasi header Origin; validasi kredensial dan rate limit tetap berlaku.
         username = request.forms.get("username", "").strip()
         password = request.forms.get("password", "")
         ip = request.environ.get("REMOTE_ADDR", "unknown")
         now = time.time()
 
+        # Bersihkan alamat lama agar dictionary tidak tumbuh tanpa batas.
+        for stale_ip in [addr for addr, stamps in login_attempts.items()
+                         if not any(now - stamp < 600 for stamp in stamps)]:
+            login_attempts.pop(stale_ip, None)
         if ip in login_attempts:
             attempts = [t for t in login_attempts[ip] if now - t < 600]
+            login_attempts[ip] = attempts
             if len(attempts) >= 5:
                 error = "Terlalu banyak percobaan. Coba lagi 10 menit kemudian."
                 return template(LOGIN_PAGE, error=error, prefix=PREFIX)
@@ -119,29 +229,35 @@ def login():
         else:
             login_attempts[ip] = []
 
-        if username == ADMIN_USER and password == ADMIN_PASS:
+        if (len(username) <= 128 and len(password) <= 1024 and
+                hmac.compare_digest(username.encode(), ADMIN_USER.encode()) and
+                verify_admin_password(password)):
+            login_attempts.pop(ip, None)
             sid = create_session()
-            response.set_cookie("session_id", sid, httponly=True, max_age=12*3600, path="/")
-            return redirect(f"{PREFIX}/dashboard")
+            response.set_cookie("session_id", sid, httponly=True, secure=COOKIE_SECURE,
+                                samesite="Lax", max_age=SESSION_ABSOLUTE_SECONDS, path="/")
+            return redirect_local(f"{PREFIX}/dashboard")
         else:
             login_attempts[ip].append(now)
             error = "Username atau Password salah"
 
     return template(LOGIN_PAGE, error=error, prefix=PREFIX)
 
-@app.route(PREFIX + "/logout")
+@app.route(PREFIX + "/logout", method="POST")
 def logout():
     sid = request.get_cookie("session_id")
-    if sid and sid in sessions:
-        del sessions[sid]
-    response.delete_cookie("session_id", path="/")
-    return redirect(f"{PREFIX}/login")
+    if not check_session() or not csrf_valid():
+        return redirect_local(f"{PREFIX}/login")
+    sessions.pop(sid, None)
+    response.delete_cookie("session_id", path="/", secure=COOKIE_SECURE, samesite="Lax")
+    return redirect_local(f"{PREFIX}/login")
 
 # ====================== DASHBOARD ======================
 @app.route(PREFIX + "/dashboard")
 @require_login
 def dashboard():
-    return template(DASHBOARD_PAGE, prefix=PREFIX)
+    sid = request.get_cookie("session_id")
+    return template(DASHBOARD_PAGE, prefix=PREFIX, csrf=sessions[sid]["csrf"])
 
 # ====================== HELPER: LIST USERS ======================
 def list_ssh_users():
@@ -156,6 +272,8 @@ def list_ssh_users():
                 parts = line.split()
                 if len(parts) >= 3:
                     user = parts[1]
+                    if not safe_username(user):
+                        continue
                     exp = " ".join(parts[2:]) if len(parts) > 3 else parts[2]
                     iplim = "1"
                     if os.path.exists(f"/etc/ssh/{user}"):
@@ -185,6 +303,8 @@ def list_xray_users(protocol):
                 parts = line.split()
                 if len(parts) >= 3:
                     user = parts[1]
+                    if not safe_username(user):
+                        continue
                     exp = parts[2]
                     uuid_or_pass = parts[3] if len(parts) > 3 else ""
                     # cek full datetime di db
@@ -249,10 +369,12 @@ def api_list_all():
 def api_cek(proto):
     if not require_auth():
         return json_response({"ok": False, "msg": "Unauthorized"}, 401)
-    data = request.json or request.forms or request.query
+    data = request_data(include_query=True)
     user = (data.get("user") or "").strip()
     if not user:
         return json_response({"ok": False, "msg": "Parameter wajib: user"}, 400)
+    if not safe_username(user):
+        return json_response({"ok": False, "msg": "Username tidak valid"}, 400)
 
     proto = proto.lower()
     domain = get_domain()
@@ -308,10 +430,10 @@ def api_cek(proto):
 # ====================== API: DELETE ======================
 @app.route(PREFIX + "/api/del/<proto>", method="POST")
 def api_del(proto):
-    if not require_auth():
+    if not require_auth(mutation=True):
         return json_response({"ok": False, "msg": "Unauthorized"}, 401)
 
-    data = request.json or request.forms
+    data = request_data()
     user = (data.get("user") or "").strip()
     if not user:
         return json_response({"ok": False, "msg": "Parameter wajib: user"}, 400)
@@ -332,10 +454,15 @@ def api_del(proto):
                 exp = " ".join(line.strip().split()[2:])
                 break
 
-        code, _, err = run_cmd(f"userdel -f {user} 2>/dev/null")
+        code, _, err = run_cmd(["userdel", "-f", user])
         # tetap lanjut hapus db meskipun userdel gagal (mungkin sudah tidak ada)
         run_cmd(f"sed -i '/^### {user} /d' {db}")
-        run_cmd(f"rm -f /etc/ssh/{user} /var/www/html/ssh-{user}.txt /etc/xray/log-createssh-{user}.log 2>/dev/null")
+        
+        for path in (f"/etc/ssh/{user}", f"/var/www/html/ssh-{user}.txt", f"/etc/xray/log-createssh-{user}.log"):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
 
         return json_response({
             "ok": True,
@@ -395,10 +522,10 @@ def api_del(proto):
 # ====================== API: RENEW ======================
 @app.route(PREFIX + "/api/renew/<proto>", method="POST")
 def api_renew(proto):
-    if not require_auth():
+    if not require_auth(mutation=True):
         return json_response({"ok": False, "msg": "Unauthorized"}, 401)
 
-    data = request.json or request.forms
+    data = request_data()
     user = (data.get("user") or "").strip()
     days = data.get("expi") or data.get("days") or data.get("duration") or data.get("active_days")
     iplim = data.get("iplim") or data.get("ip_limit")
@@ -411,10 +538,25 @@ def api_renew(proto):
 
     try:
         days = int(days)
-        if days < 0:
+        if not 1 <= days <= 3650:
             raise ValueError
     except:
-        return json_response({"ok": False, "msg": "expi harus angka >= 0"}, 400)
+        return json_response({"ok": False, "msg": "expi harus antara 1 dan 3650 hari"}, 400)
+
+    if iplim is not None:
+        try:
+            iplim = int(iplim)
+            if not 0 <= iplim <= 1000:
+                raise ValueError
+        except (TypeError, ValueError):
+            return json_response({"ok": False, "msg": "iplim harus antara 0 dan 1000"}, 400)
+    if quota is not None:
+        try:
+            quota = int(quota)
+            if not 0 <= quota <= 1_000_000:
+                raise ValueError
+        except (TypeError, ValueError):
+            return json_response({"ok": False, "msg": "quota harus antara 0 dan 1000000 GB"}, 400)
 
     proto = proto.lower()
 
@@ -497,6 +639,10 @@ def api_renew(proto):
         new_exp_date = new_dt.strftime("%Y-%m-%d")
         new_exp_full = new_dt.strftime("%Y-%m-%d %H:%M:%S")
 
+        # Nilai kredensial di DB dipakai dalam ekspresi sed; batasi sebelum digunakan.
+        if uuid_or_pass and not re.fullmatch(r"[A-Za-z0-9-]{1,128}", uuid_or_pass):
+            return json_response({"ok": False, "msg": "Data akun tersimpan tidak valid"}, 409)
+
         # update db
         if uuid_or_pass:
             run_cmd(f"sed -i '/^### {user} /c\\### {user} {new_exp_full} {uuid_or_pass}' {db_file}")
@@ -544,10 +690,10 @@ def api_renew(proto):
 # ====================== SSH CREATE (existing, improved) ======================
 @app.route(PREFIX + "/api/ssh", method="POST")
 def add_ssh():
-    if not require_auth():
+    if not require_auth(mutation=True):
         return json_response({"ok": False, "msg": "Unauthorized"}, 401)
 
-    data = request.json or request.forms
+    data = request_data()
     user = (data.get("user") or "").strip()
     passwd = (data.get("pass") or data.get("password") or "").strip()
     expired = data.get("expi") or data.get("expired") or data.get("duration")
@@ -555,29 +701,33 @@ def add_ssh():
 
     if not user or not passwd or not expired:
         return json_response({"ok": False, "msg": "Parameter wajib: user, pass, expi"}, 400)
+    if len(passwd) > 256 or any(ch in passwd for ch in ("\n", "\r", ":", "\x00")):
+        return json_response({"ok": False, "msg": "Password maksimal 256 karakter dan tidak boleh memuat titik dua atau baris baru"}, 400)
     if not safe_username(user):
         return json_response({"ok": False, "msg": "Username tidak valid (3-32, a-zA-Z0-9_-)"}, 400)
 
     try:
         expired = int(expired)
         iplim = int(iplim)
+        if not (1 <= expired <= 3650 and 1 <= iplim <= 1000):
+            raise ValueError
     except:
-        return json_response({"ok": False, "msg": "expi & iplim harus angka"}, 400)
+        return json_response({"ok": False, "msg": "expi harus 1-3650 hari dan iplim 1-1000"}, 400)
 
     if os.path.exists("/etc/ssh/.ssh.db") and f"### {user} " in open("/etc/ssh/.ssh.db").read():
         return json_response({"ok": False, "msg": f"Username {user} sudah digunakan"}, 409)
 
-    if run_cmd(f"id {user} >/dev/null 2>&1")[0] == 0:
+    if run_cmd(["id", user])[0] == 0:
         return json_response({"ok": False, "msg": f"Username {user} sudah ada di sistem"}, 409)
 
     exp_date = (datetime.datetime.now() + datetime.timedelta(days=expired)).strftime("%Y-%m-%d")
     exp_full = (datetime.datetime.now() + datetime.timedelta(days=expired)).strftime("%Y-%m-%d %H:%M:%S")
 
-    if run_cmd(f'useradd -e {exp_date} -s /bin/false -M {user}')[0] != 0:
+    if run_cmd(["useradd", "-e", exp_date, "-s", "/bin/false", "-M", user])[0] != 0:
         return json_response({"ok": False, "msg": "Gagal membuat user Linux"}, 500)
 
-    if run_cmd(f'echo "{user}:{passwd}" | chpasswd')[0] != 0:
-        run_cmd(f'userdel -r {user} 2>/dev/null')
+    if run_cmd(["chpasswd"], input_text=f"{user}:{passwd}\n")[0] != 0:
+        run_cmd(["userdel", "-r", user])
         return json_response({"ok": False, "msg": "Gagal set password"}, 500)
 
     run_cmd(f'passwd -u {user}')
@@ -593,7 +743,8 @@ def add_ssh():
     domain = get_domain()
     info = f"Username : {user}\nPassword : {passwd}\nHost     : {domain}\nExpired  : {exp_full}\n"
     os.makedirs("/var/www/html", exist_ok=True)
-    open(f"/var/www/html/ssh-{user}.txt", "w").write(info)
+    with open(f"/var/www/html/ssh-{user}.txt", "w", encoding="utf-8") as f:
+        f.write(info)
 
     return json_response({
         "ok": True,
@@ -608,10 +759,10 @@ def add_ssh():
 
 # ====================== XRAY CREATE ======================
 def add_xray(protocol):
-    if not require_auth():
+    if not require_auth(mutation=True):
         return json_response({"ok": False, "msg": "Unauthorized"}, 401)
 
-    data = request.json or request.forms
+    data = request_data()
     user = (data.get("user") or "").strip()
     duration = data.get("expi") or data.get("duration") or data.get("expired")
     quota = data.get("quota") or "0"
@@ -626,8 +777,10 @@ def add_xray(protocol):
         duration = int(duration)
         quota = int(quota)
         ip_limit = int(ip_limit)
+        if not (1 <= duration <= 3650 and 0 <= quota <= 1_000_000 and 0 <= ip_limit <= 1000):
+            raise ValueError
     except:
-        return json_response({"ok": False, "msg": "expi/quota/iplim harus angka"}, 400)
+        return json_response({"ok": False, "msg": "expi harus 1-3650 hari, quota 0-1000000 GB, dan iplim 0-1000"}, 400)
 
     conf_dir = f"/etc/xray/{protocol}"
     conf_file = f"{conf_dir}/config.json"
@@ -717,10 +870,10 @@ def add_trojan(): return add_xray("trojan")
 # ====================== SHADOWSOCKS ======================
 @app.route(PREFIX + "/api/shadowsocks", method="POST")
 def add_shadowsocks():
-    if not require_auth():
+    if not require_auth(mutation=True):
         return json_response({"ok": False, "msg": "Unauthorized"}, 401)
 
-    data = request.json or request.forms
+    data = request_data()
     user = (data.get("user") or "").strip()
     duration = data.get("expi") or data.get("duration") or data.get("expired")
     quota = data.get("quota") or "0"
@@ -735,8 +888,10 @@ def add_shadowsocks():
         duration = int(duration)
         quota = int(quota)
         ip_limit = int(ip_limit)
+        if not (1 <= duration <= 3650 and 0 <= quota <= 1_000_000 and 0 <= ip_limit <= 1000):
+            raise ValueError
     except:
-        return json_response({"ok": False, "msg": "expi/quota/iplim harus angka"}, 400)
+        return json_response({"ok": False, "msg": "expi harus 1-3650 hari, quota 0-1000000 GB, dan iplim 0-1000"}, 400)
 
     conf_dir = "/etc/xray/shadowsocks"
     conf_file = f"{conf_dir}/config.json"
@@ -788,39 +943,38 @@ def add_shadowsocks():
 @app.route(PREFIX + "/api/trial/<proto>", method="POST")
 def api_trial(proto):
     """Buat akun trial (default 1 hari, username random trial-xxxx)"""
-    if not require_auth():
+    if not require_auth(mutation=True):
         return json_response({"ok": False, "msg": "Unauthorized"}, 401)
 
-    data = request.json or request.forms or {}
+    data = request_data()
     days = data.get("expi") or data.get("days") or 1
     try:
         days = int(days)
-    except:
-        days = 1
+        if not 1 <= days <= 7:
+            raise ValueError
+    except (TypeError, ValueError):
+        return json_response({"ok": False, "msg": "Durasi trial harus 1-7 hari"}, 400)
 
     proto = proto.lower()
     user = "trial-" + secrets.token_hex(3)
 
     if proto == "ssh":
         passwd = secrets.token_hex(4)
-        # reuse add_ssh logic via internal call-like
-        request.environ["wsgi.input"] = None  # safety
-        # call logic manually
-        body = {"user": user, "pass": passwd, "expi": days, "iplim": 1}
-        # simulate
+        # Buat akun trial SSH dengan input internal yang telah divalidasi.
         exp_date = (datetime.datetime.now() + datetime.timedelta(days=days)).strftime("%Y-%m-%d")
         exp_full = (datetime.datetime.now() + datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-        if run_cmd(f'useradd -e {exp_date} -s /bin/false -M {user}')[0] != 0:
+        if run_cmd(["useradd", "-e", exp_date, "-s", "/bin/false", "-M", user])[0] != 0:
             return json_response({"ok": False, "msg": "Gagal buat user trial"}, 500)
-        run_cmd(f'echo "{user}:{passwd}" | chpasswd')
+        run_cmd(["chpasswd"], input_text=f"{user}:{passwd}\n")
         run_cmd(f'passwd -u {user}')
         open(f"/etc/ssh/{user}", "w").write("1")
         with open("/etc/ssh/.ssh.db", "a") as f:
             f.write(f"### {user} {exp_full}\n")
         domain = get_domain()
         info = f"Username : {user}\nPassword : {passwd}\nHost     : {domain}\nExpired  : {exp_full}\n"
-        open(f"/var/www/html/ssh-{user}.txt", "w").write(info)
-        return json_response({
+        with open(f"/var/www/html/ssh-{user}.txt", "w", encoding="utf-8") as f:
+            f.write(info)
+            return json_response({
             "ok": True, "protocol": "ssh", "user": user, "pass": passwd,
             "expired": exp_full, "ip_limit": 1, "domain": domain,
             "link": f"https://{domain}:81/ssh-{user}.txt", "trial": True
@@ -924,10 +1078,10 @@ SYSTEM_SERVICES = [
 def _svc_status(unit):
     code, out, _ = run_cmd(f"systemctl is-active {unit}")
     active = out.strip() == "active"
-    code2, en, _ = run_cmd(f"systemctl is-enabled {unit} 2>/dev/null")
+    code2, en, _ = run_cmd(["systemctl", "is-enabled", unit])
     enabled = en.strip() in ("enabled", "enabled-runtime", "static")
     # uptime-ish: ActiveEnterTimestamp
-    _, since, _ = run_cmd(f"systemctl show -p ActiveEnterTimestamp --value {unit} 2>/dev/null")
+    _, since, _ = run_cmd(["systemctl", "show", "-p", "ActiveEnterTimestamp", "--value", unit])
     return {
         "unit": unit,
         "active": active,
@@ -948,8 +1102,14 @@ def api_services():
         items.append(st)
     # domain & uptime server
     domain = get_domain()
-    _, uptime, _ = run_cmd("uptime -p 2>/dev/null || uptime")
-    _, load, _ = run_cmd("cat /proc/loadavg 2>/dev/null | awk '{print $1,$2,$3}'")
+    _, uptime, _ = run_cmd(["uptime", "-p"])
+    if not uptime:
+        _, uptime, _ = run_cmd(["uptime"])
+    try:
+        with open("/proc/loadavg", encoding="utf-8") as f:
+            load = " ".join(f.read().split()[:3])
+    except OSError:
+        load = ""
     mem = ""
     try:
         with open("/proc/meminfo") as f:
@@ -977,9 +1137,9 @@ def api_services():
 
 @app.route(PREFIX + "/api/services/restart", method="POST")
 def api_restart_service():
-    if not require_auth():
+    if not require_auth(mutation=True):
         return json_response({"ok": False, "msg": "Unauthorized"}, 401)
-    data = request.json or request.forms or {}
+    data = request_data()
     unit = (data.get("unit") or data.get("service") or "").strip()
     allowed = {u for u, _ in XRAY_SERVICES + SYSTEM_SERVICES}
     if unit not in allowed:
@@ -996,7 +1156,7 @@ def api_restart_service():
 
 @app.route(PREFIX + "/api/services/restart-all", method="POST")
 def api_restart_all_xray():
-    if not require_auth():
+    if not require_auth(mutation=True):
         return json_response({"ok": False, "msg": "Unauthorized"}, 401)
     results = []
     for unit, label in XRAY_SERVICES:
@@ -1010,7 +1170,7 @@ def health():
     return json_response({"ok": True, "status": "running"})
 
 # ====================== HTML ======================
-LOGIN_PAGE = '''
+LOGIN_PAGE = r'''
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -1041,29 +1201,82 @@ button{width:100%;margin-top:6px;padding:14px;border:none;border-radius:12px;bac
 button:hover{transform:translateY(-1px);box-shadow:0 12px 28px rgba(99,102,241,.42)}
 .error{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.28);color:#fca5a5;padding:11px 13px;border-radius:12px;margin-bottom:16px;text-align:center;font-size:.86rem}
 .foot{text-align:center;margin-top:20px;font-size:.72rem;color:#4a5568}
+.login-toast{position:fixed;z-index:5;top:18px;left:50%;transform:translate(-50%,-12px);opacity:0;visibility:hidden;background:rgba(15,23,42,.96);border:1px solid rgba(34,197,94,.35);color:#bbf7d0;padding:12px 18px;border-radius:13px;box-shadow:0 16px 42px rgba(0,0,0,.38);font-size:.86rem;transition:opacity .22s,transform .22s,visibility .22s}
+.login-toast.show{opacity:1;visibility:visible;transform:translate(-50%,0)}
+button:focus-visible,input:focus-visible{outline:2px solid #a5b4fc;outline-offset:3px}
+button:active{transform:scale(.985)}
+button:disabled{opacity:.72;cursor:wait;transform:none}
+button.is-loading{display:flex;align-items:center;justify-content:center;gap:10px}
+button.is-loading:before{content:"";width:16px;height:16px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+.error{animation:shake .38s ease both}
+@keyframes shake{15%,45%,75%{transform:translateX(-5px)}30%,60%,90%{transform:translateX(5px)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 </style>
 </head>
 <body>
+<div id="login-toast" class="login-toast" role="status" aria-live="polite">Berhasil logout. Sampai jumpa.</div>
 <div class="wrap"><div class="card">
 <div class="logo">F</div>
 <h1>FST Panel</h1>
 <p class="sub">Masuk untuk mengelola VPN</p>
 % if error:
-<div class="error">{{error}}</div>
+<div id="login-server-error" class="error" role="alert">{{error}}</div>
 % end
-<form method="POST" action="{{prefix}}/login">
+<div id="login-client-error" class="error" role="alert" hidden></div>
+<form id="login-form" method="POST" action="{{prefix}}/login">
 <div class="field"><label>Username</label><input type="text" name="username" required autofocus placeholder="Username admin"></div>
 <div class="field"><label>Password</label><input type="password" name="password" required placeholder="••••••••"></div>
-<button type="submit">Masuk</button>
+<button type="submit" id="login-submit">Masuk</button>
 </form>
 <p class="foot">Secure session · 12 jam</p>
 </div></div>
+<script>
+(function(){
+  var form=document.getElementById("login-form"),button=document.getElementById("login-submit");
+  var clientError=document.getElementById("login-client-error");
+  function showError(message){
+    if(!clientError)return;
+    clientError.textContent=message;
+    clientError.hidden=!message;
+    if(message){clientError.classList.remove("shake");void clientError.offsetWidth;clientError.classList.add("shake");}
+  }
+  try{
+    if(document.getElementById("login-server-error"))sessionStorage.removeItem("fst_login_pending");
+    else if(sessionStorage.getItem("fst_login_pending")==="1"){
+      sessionStorage.removeItem("fst_login_pending");
+      showError("Sesi belum terbentuk setelah login. Coba masuk kembali.");
+    }
+    if(sessionStorage.getItem("fst_logout_pending")==="1"){
+      sessionStorage.removeItem("fst_logout_pending");
+      var notice=document.getElementById("login-toast");
+      if(notice){notice.classList.add("show");setTimeout(function(){notice.classList.remove("show");},3000);}
+    }
+  }catch(ignore){}
+  if(!form||!button)return;
+  form.addEventListener("submit",function(event){
+    if(!form.checkValidity())return;
+    if(form.dataset.submitting==="1"){event.preventDefault();return;}
+    form.dataset.submitting="1";
+    showError("");
+    try{sessionStorage.setItem("fst_login_pending","1");}catch(ignore){}
+    button.disabled=true;button.classList.add("is-loading");button.textContent="Memeriksa...";
+    // Default action continues: browser sends the normal POST and follows the server redirect.
+  });
+  window.addEventListener("pageshow",function(){
+    if(form.dataset.submitting==="1"){
+      form.dataset.submitting="0";
+      button.disabled=false;button.classList.remove("is-loading");button.textContent="Masuk";
+    }
+  });
+})();
+</script>
 </body>
 </html>
 
 '''
 
-DASHBOARD_PAGE = '''
+DASHBOARD_PAGE = r'''
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -1191,6 +1404,67 @@ tr:hover td{background:rgba(99,102,241,.04)}
 .toast{position:fixed;bottom:20px;right:20px;z-index:99;background:#1a2438;border:1px solid var(--border);color:var(--text);padding:12px 18px;border-radius:12px;font-size:.84rem;box-shadow:0 12px 32px rgba(0,0,0,.4);animation:in .25s ease;max-width:320px}
 .toast.err{border-color:rgba(239,68,68,.4)}
 .toast.ok{border-color:rgba(34,197,94,.4)}
+/* Motion and accessible focus */
+:focus-visible{outline:2px solid #a5b4fc;outline-offset:3px}
+button:active{transform:scale(.975)}
+.btn:disabled,.svc-btn:disabled{transform:none;cursor:wait}
+.btn.is-loading,.svc-btn.is-loading{display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.btn.is-loading:before,.svc-btn.is-loading:before{content:"";width:14px;height:14px;flex:0 0 14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite}
+.btn-g.is-loading{opacity:.78;pointer-events:none}
+.btn-g.is-loading:before{content:"";display:inline-block;width:12px;height:12px;margin-right:7px;border:2px solid rgba(148,163,184,.3);border-top-color:#a5b4fc;border-radius:50%;vertical-align:-2px;animation:sp .7s linear infinite}
+.modal-backdrop{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(2,6,15,.72);backdrop-filter:blur(8px);opacity:0;visibility:hidden;transition:opacity .2s ease,visibility .2s ease}
+.modal-backdrop.open{opacity:1;visibility:visible}
+.modal-card{position:relative;width:min(100%,520px);max-height:min(86vh,760px);overflow:auto;background:linear-gradient(145deg,#151e31,#0d1422);border:1px solid rgba(148,163,184,.18);border-radius:22px;padding:25px;box-shadow:0 28px 90px rgba(0,0,0,.58);transform:translateY(16px) scale(.97);transition:transform .24s cubic-bezier(.2,.8,.2,1)}
+.modal-backdrop.open .modal-card{transform:translateY(0) scale(1)}
+.modal-close{position:absolute;right:13px;top:12px;width:34px;height:34px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,.04);color:var(--muted);cursor:pointer;font-size:1.2rem}
+.modal-title{font-size:1.12rem;letter-spacing:-.02em;margin:0 42px 12px 0}
+.modal-body{font-size:.86rem;color:#dbe5f5;line-height:1.65;overflow-wrap:anywhere}
+.modal-body .result{display:block;margin-top:0}
+.modal-mark{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;margin-bottom:13px;background:rgba(99,102,241,.16);color:#c4b5fd;border:1px solid rgba(99,102,241,.3);font-weight:800;animation:pop .35s cubic-bezier(.2,.8,.2,1)}
+.modal-mark.success{background:rgba(34,197,94,.14);color:#86efac;border-color:rgba(34,197,94,.3)}
+.modal-mark.danger{background:rgba(239,68,68,.14);color:#fca5a5;border-color:rgba(239,68,68,.3)}
+@keyframes pop{from{transform:scale(.55);opacity:.2}to{transform:scale(1);opacity:1}}
+.modal-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:20px}
+.modal-actions .btn{width:auto;min-width:112px}
+.modal-actions .btn-outline{color:var(--text)}
+.toast{animation:toast-in .28s cubic-bezier(.2,.8,.2,1)}
+@keyframes toast-in{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+@media(max-width:560px){.modal-card{padding:22px 18px;border-radius:18px}.modal-actions{flex-direction:column-reverse}.modal-actions .btn{width:100%}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+
+/* Premium midnight + champagne dashboard skin */
+:root{--bg:#080b13;--surface:#0d1421;--card:#111a2a;--border:rgba(211,190,145,.13);--text:#f4f0e7;--muted:#9b9a9a;--p:#c6a66d;--p2:#e5d3a6;--ok:#63c79a;--warn:#dbb66c;--danger:#e47a78;--gold:#d8bd83;--gold-bright:#f0dca7}
+body{background:radial-gradient(ellipse at 60% -20%,rgba(149,112,63,.16),transparent 45%),radial-gradient(ellipse at 0% 40%,rgba(42,68,109,.2),transparent 42%),#080b13;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,sans-serif}
+.glow{background:radial-gradient(ellipse 48% 36% at 82% 2%,rgba(176,137,73,.12),transparent),radial-gradient(ellipse 48% 42% at 5% 90%,rgba(77,91,143,.12),transparent)}
+.app{max-width:1380px;padding:24px 28px 58px}
+.hdr{min-height:64px;margin-bottom:22px;padding:0 2px 18px;border-bottom:1px solid rgba(211,190,145,.12)}
+.brand{gap:13px}.bicon{width:46px;height:46px;border-radius:15px;background:linear-gradient(145deg,#e4d09a,#987643);color:#17140e;box-shadow:0 8px 24px rgba(186,148,79,.2);font-size:1.05rem;letter-spacing:-.04em}
+.brand h1{font-size:1.04rem;letter-spacing:.015em}.brand small{font-size:.69rem;color:#a9a59b;letter-spacing:.08em;text-transform:uppercase}
+.hdr-right{display:flex;align-items:center;gap:12px}.top-indicator{display:inline-flex;align-items:center;gap:8px;color:#b5b0a4;font-size:.75rem;border:1px solid var(--border);border-radius:999px;padding:8px 12px;background:rgba(255,255,255,.025)}.top-indicator i{width:7px;height:7px;border-radius:50%;background:#65c99b;box-shadow:0 0 12px rgba(101,201,155,.7)}
+.btn-g{display:inline-flex;align-items:center;gap:8px;padding:9px 15px;border-radius:11px;border:1px solid rgba(211,190,145,.18);background:rgba(255,255,255,.035);color:#ded8c9}.btn-g:hover{background:rgba(216,189,131,.1);border-color:rgba(216,189,131,.38);color:#fff}
+.welcome-banner{position:relative;display:flex;align-items:center;justify-content:space-between;gap:22px;overflow:hidden;margin:4px 0 22px;padding:26px 30px;border:1px solid rgba(216,189,131,.2);border-radius:23px;background:linear-gradient(112deg,rgba(25,33,49,.97),rgba(24,27,37,.95) 57%,rgba(45,38,27,.92));box-shadow:0 18px 48px rgba(0,0,0,.22)}
+.welcome-banner:before{content:"";position:absolute;width:290px;height:290px;right:13%;top:-195px;border:1px solid rgba(216,189,131,.16);border-radius:50%;box-shadow:0 0 0 28px rgba(216,189,131,.025),0 0 0 58px rgba(216,189,131,.018)}
+.welcome-copy,.server-plaque{position:relative;z-index:1}.eyebrow{display:flex;align-items:center;gap:9px;color:#d3b978;font-size:.65rem;font-weight:700;letter-spacing:.18em;text-transform:uppercase}.eyebrow:before{content:"";width:21px;height:1px;background:#d3b978}
+.welcome-banner h2{font-size:1.62rem;letter-spacing:-.045em;margin:9px 0 5px;font-weight:650}.welcome-banner p{max-width:620px;color:#a9abb2;font-size:.84rem}
+.server-plaque{display:flex;align-items:center;gap:12px;min-width:190px;padding:12px 15px;border:1px solid rgba(216,189,131,.18);border-radius:14px;background:rgba(4,8,14,.25)}.plaque-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:11px;background:rgba(216,189,131,.12);color:#e2ca8f;font-size:1rem}.server-plaque small{display:block;color:#8f918f;font-size:.62rem;letter-spacing:.14em;text-transform:uppercase}.server-plaque strong{display:block;margin-top:2px;font-size:.78rem;color:#eee4ce;font-weight:600;overflow-wrap:anywhere}
+.dash-layout{display:grid;grid-template-columns:238px minmax(0,1fr);align-items:start;gap:20px}.sidebar{position:sticky;top:18px;padding:17px 12px 13px;border:1px solid var(--border);border-radius:20px;background:linear-gradient(160deg,rgba(18,26,40,.96),rgba(12,17,27,.96));box-shadow:0 18px 45px rgba(0,0,0,.18)}
+.side-kicker{padding:5px 11px 9px;color:#797e88;font-size:.62rem;font-weight:700;letter-spacing:.17em;text-transform:uppercase}.side-nav{display:grid;gap:5px}.side-link{position:relative;display:flex;align-items:center;gap:11px;width:100%;min-height:53px;padding:8px 10px;border:1px solid transparent;border-radius:13px;background:transparent;color:#a6a9b0;text-align:left;font-family:inherit;cursor:pointer;transition:background .2s,border-color .2s,color .2s,transform .18s}.side-link:hover{background:rgba(255,255,255,.04);border-color:rgba(216,189,131,.1);color:#f4eee1;transform:translateX(2px)}.side-link.active{color:#f7edcf;border-color:rgba(216,189,131,.2);background:linear-gradient(95deg,rgba(216,189,131,.14),rgba(216,189,131,.035));box-shadow:inset 2px 0 #d8bd83}.side-icon{width:32px;height:32px;flex:0 0 32px;display:grid;place-items:center;border-radius:10px;background:rgba(255,255,255,.045);color:#aaa38e;font-size:.94rem}.side-link.active .side-icon{background:linear-gradient(145deg,rgba(216,189,131,.24),rgba(216,189,131,.08));color:#ecd69e}.side-copy{min-width:0;flex:1}.side-copy b{display:block;font-size:.78rem;font-weight:600;line-height:1.25}.side-copy small{display:block;margin-top:3px;color:#7f8490;font-size:.63rem;line-height:1.2}.side-link.active .side-copy small{color:#b4aa90}.side-arrow{color:#807d73;font-size:1.05rem;opacity:0;transform:translateX(-3px);transition:.2s}.side-link:hover .side-arrow,.side-link.active .side-arrow{opacity:1;transform:none}.side-divider{height:1px;margin:13px 8px;background:rgba(211,190,145,.1)}.sidebar-foot{margin:15px 3px 1px;padding:12px 11px;border:1px solid rgba(211,190,145,.1);border-radius:12px;background:rgba(255,255,255,.018);color:#858891;font-size:.66rem;line-height:1.55}.sidebar-foot b{display:block;margin-bottom:2px;color:#c3b896;font-weight:600;letter-spacing:.04em}
+.main-column{min-width:0}.stats{grid-template-columns:repeat(4,minmax(0,1fr));gap:11px;margin:0 0 20px}.stat{position:relative;min-height:119px;overflow:hidden;padding:15px 16px;border-radius:16px;border-color:rgba(211,190,145,.12);background:linear-gradient(145deg,rgba(20,29,44,.98),rgba(13,19,30,.98));box-shadow:0 10px 26px rgba(0,0,0,.13)}.stat:after{content:"";position:absolute;right:-29px;bottom:-52px;width:106px;height:106px;border:1px solid rgba(216,189,131,.08);border-radius:50%;box-shadow:0 0 0 15px rgba(216,189,131,.018)}.stat:hover{border-color:rgba(216,189,131,.27);transform:translateY(-2px)}.stat-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}.stat .l{margin:0;color:#9c9b98;font-size:.64rem;letter-spacing:.12em}.stat-icon{display:grid;place-items:center;width:27px;height:27px;border-radius:8px;background:rgba(216,189,131,.1);color:#ddc78f;font-size:.84rem}.stat .v{font-size:1.18rem;font-weight:650;letter-spacing:-.02em;color:#f1ebdf}.stat .v.ok{color:#8de0b4}.stat .v.warn{color:#edcf8b}.stat-note{margin-top:4px;color:#767d88;font-size:.64rem}
+.view-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin:8px 2px 15px}.view-kicker{color:#cfb779;font-size:.62rem;font-weight:700;letter-spacing:.17em;text-transform:uppercase}.view-heading h2{margin:4px 0 2px;font-size:1.3rem;font-weight:650;letter-spacing:-.035em}.view-heading p{color:#9095a0;font-size:.78rem}.view-tag{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid rgba(216,189,131,.14);border-radius:999px;background:rgba(216,189,131,.045);color:#c9bd9e;font-size:.66rem;white-space:nowrap}.view-tag span{width:6px;height:6px;border-radius:50%;background:#d8bd83;box-shadow:0 0 9px rgba(216,189,131,.6)}
+.protocol-panel{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 14px;padding:12px 15px;border:1px solid var(--border);border-radius:15px;background:linear-gradient(110deg,rgba(18,26,40,.94),rgba(15,20,30,.94))}.protocol-caption small{display:block;color:#818590;font-size:.59rem;letter-spacing:.15em;text-transform:uppercase}.protocol-caption strong{display:block;margin-top:2px;color:#e4ddcc;font-size:.77rem;font-weight:600}.protos{justify-content:flex-end;margin:0;overflow:visible}.chip{flex:0 0 auto;min-width:70px;padding:8px 13px;border-color:rgba(211,190,145,.1);background:rgba(255,255,255,.025);color:#9296a0;font-size:.72rem}.chip:hover{border-color:rgba(216,189,131,.28);color:#eee4ce}.chip.active{border-color:rgba(216,189,131,.38);background:linear-gradient(135deg,rgba(216,189,131,.2),rgba(216,189,131,.08));color:#f0dca7;box-shadow:inset 0 0 0 1px rgba(216,189,131,.05)}
+.panel{padding:24px;border-radius:18px;border-color:rgba(211,190,145,.13);background:linear-gradient(145deg,rgba(18,26,40,.98),rgba(13,19,30,.98));box-shadow:0 15px 38px rgba(0,0,0,.16)}.panel:not(.hidden){animation:lux-in .32s ease both}@keyframes lux-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+label{color:#aaa99f;font-size:.72rem;letter-spacing:.025em}input{border-color:rgba(211,190,145,.12);border-radius:11px;background:rgba(6,10,17,.58);color:#f4f0e7}input:focus{border-color:rgba(216,189,131,.5);box-shadow:0 0 0 3px rgba(216,189,131,.1)}input::placeholder{color:#68707d}
+.btn{border-radius:11px;background:linear-gradient(135deg,#e3cf99,#b38c4e);color:#1a160e;box-shadow:0 7px 20px rgba(179,140,78,.19);font-weight:700}.btn:hover{box-shadow:0 11px 26px rgba(179,140,78,.28)}.btn-ok{background:linear-gradient(135deg,#6dcc9f,#368c68);color:#06170e;box-shadow:0 7px 19px rgba(75,176,128,.18)}.btn-warn{background:linear-gradient(135deg,#e3c27f,#af8240);color:#1b160b;box-shadow:0 7px 19px rgba(193,151,78,.17)}.btn-danger{background:linear-gradient(135deg,#e9857d,#ac4f4f);color:#fff7f5;box-shadow:0 7px 19px rgba(205,93,86,.17)}.btn-outline{color:#d4c9b2;border-color:rgba(211,190,145,.18)}.btn-outline:hover{background:rgba(216,189,131,.07);border-color:rgba(216,189,131,.36);color:#f2e6c7}
+.result{border:1px solid rgba(99,199,154,.16);border-left:3px solid var(--ok);border-radius:13px;background:rgba(8,14,22,.68);color:#e5e5dc}.result.error{border-color:rgba(228,122,120,.2);border-left-color:var(--danger)}.link-box{background:#0b111c;border-color:rgba(211,190,145,.12);border-radius:9px}.copy{background:#1b2431;border-color:rgba(211,190,145,.13);color:#d3c7ac}.copy:hover{background:#263142;color:#fff}.warn-t{padding:10px 12px;border:1px solid rgba(228,122,120,.17);border-radius:10px;background:rgba(228,122,120,.055);color:#e9a09b}.hint{color:#a9a593}.twrap{border-color:rgba(211,190,145,.12);border-radius:13px}table{font-size:.77rem}th{background:#141d2b;color:#a9a493}td{color:#deded9}tr:hover td{background:rgba(216,189,131,.035)}.badge-ok{background:rgba(99,199,154,.13);color:#9ae2bd}.badge-warn{background:rgba(219,182,108,.15);color:#edcf8b}.badge-exp{background:rgba(228,122,120,.14);color:#f0a09d}.act-cek{background:#536d8b}.act-renew{background:#aa8245}.act-del{background:#a34e4e}
+.svc-card{border-color:rgba(211,190,145,.1);background:linear-gradient(145deg,rgba(9,15,24,.72),rgba(13,20,31,.84));border-radius:14px}.svc-card:hover{border-color:rgba(216,189,131,.25);transform:translateY(-2px)}.svc-card.up{border-color:rgba(99,199,154,.2)}.svc-card.down{border-color:rgba(228,122,120,.2)}.svc-btn{border-color:rgba(211,190,145,.15);color:#bab5a8;border-radius:9px}.svc-btn:hover{border-color:rgba(216,189,131,.34);background:rgba(216,189,131,.07);color:#f0dca7}.svc-meta code{background:rgba(216,189,131,.08);color:#d2c39e}.group-title{color:#c3b27f;letter-spacing:.14em}.dot.on{box-shadow:0 0 9px rgba(99,199,154,.7)}
+.modal-card{border-color:rgba(216,189,131,.22);background:linear-gradient(145deg,#182233,#101722)}.modal-mark{background:rgba(216,189,131,.12);color:#ead49b;border-color:rgba(216,189,131,.26)}.toast{border-color:rgba(216,189,131,.22);background:#172131;color:#f2eee4}
+.side-link:focus-visible,.chip:focus-visible,.btn:focus-visible{outline-color:#e3cf99}
+@media(max-width:980px){.app{padding:20px 20px 44px}.dash-layout{grid-template-columns:210px minmax(0,1fr);gap:15px}.sidebar{padding:14px 9px}.side-link{gap:8px;padding:8px}.side-copy small{font-size:.6rem}.stats{gap:8px}.stat{padding:13px}}
+@media(max-width:820px){.dash-layout{grid-template-columns:minmax(0,1fr)}.sidebar{position:static;padding:12px}.side-kicker{padding-top:3px}.side-nav{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.side-divider,.sidebar-foot{display:none}.side-link{min-height:48px}.side-copy small{display:none}.side-arrow{display:none}.main-column{min-width:0}.welcome-banner{padding:23px}}
+@media(max-width:620px){.app{padding:14px 12px 36px}.hdr{margin-bottom:15px;padding-bottom:13px}.hdr-right{gap:7px}.top-indicator{display:none}.welcome-banner{display:block;padding:20px 18px;border-radius:18px}.welcome-banner h2{font-size:1.3rem}.welcome-banner p{font-size:.75rem}.server-plaque{min-width:0;width:max-content;max-width:100%;margin-top:14px;padding:8px 10px}.plaque-icon{width:29px;height:29px}.server-plaque small{font-size:.55rem}.server-plaque strong{font-size:.68rem;max-width:none;white-space:normal}.dash-layout{gap:12px}.side-nav{grid-template-columns:repeat(2,minmax(0,1fr))}.side-link{min-height:48px}.side-copy b{font-size:.72rem}.side-icon{width:29px;height:29px;flex-basis:29px}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:16px}.stat{min-height:106px;padding:12px}.stat .v{font-size:1.04rem}.view-heading{align-items:flex-start;margin:4px 1px 12px}.view-heading h2{font-size:1.14rem}.view-heading p{font-size:.71rem}.view-tag{font-size:.59rem;padding:6px 8px}.protocol-panel{display:block;padding:11px;margin-bottom:11px}.protocol-caption{display:flex;align-items:baseline;gap:8px;margin-bottom:9px}.protocol-caption small{font-size:.56rem}.protocol-caption strong{margin:0}.protos{justify-content:flex-start;overflow-x:auto;padding-bottom:2px}.chip{min-width:64px;padding:8px 11px}.panel{padding:17px 14px;border-radius:15px}.svc-head{align-items:flex-start}.svc-actions .btn{margin-bottom:0}.svc-grid{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.panel:not(.hidden){animation:none}.side-link:hover,.stat:hover,.svc-card:hover{transform:none}}
+
+.logout-form{margin:0}.logout-link{cursor:pointer;font:inherit}.logout-link:disabled{opacity:.65;cursor:wait}.logout-link.is-loading{position:relative;gap:9px}.logout-link.is-loading:before{content:"";width:13px;height:13px;border:2px solid rgba(255,255,255,.3);border-top-color:#e3cf99;border-radius:50%;animation:spin .7s linear infinite}
 </style>
 </head>
 <body>
@@ -1199,39 +1473,55 @@ tr:hover td{background:rgba(99,102,241,.04)}
   <header class="hdr">
     <div class="brand">
       <div class="bicon">F</div>
-      <div><h1>FST Panel</h1><small id="domain-label">VPN Manager</small></div>
+      <div><h1>FST Panel</h1><small>Private server console</small></div>
     </div>
-    <a href="{{prefix}}/logout" class="btn-g">Logout</a>
+    <div class="hdr-right"><span class="top-indicator"><i></i> Admin workspace</span><form id="logout-form" class="logout-form" method="POST" action="{{prefix}}/logout"><input type="hidden" name="csrf_token" value="{{csrf}}"><button type="submit" class="btn-g logout-link"><span>↗</span> Logout</button></form></div>
   </header>
 
-  <div class="stats" id="stats-bar">
-    <div class="stat"><div class="l">Services</div><div class="v" id="st-svc">—</div></div>
-    <div class="stat"><div class="l">Uptime</div><div class="v" id="st-up" style="font-size:.9rem">—</div></div>
-    <div class="stat"><div class="l">Load</div><div class="v" id="st-load" style="font-size:.9rem">—</div></div>
-    <div class="stat"><div class="l">Memory</div><div class="v" id="st-mem" style="font-size:.9rem">—</div></div>
-  </div>
+  <section class="welcome-banner">
+    <div class="welcome-copy"><div class="eyebrow">CONTROL CENTER</div><h2>VPN Control Center</h2><p>Kelola akses, masa aktif, dan layanan server dalam satu ruang kerja.</p></div>
+    <div class="server-plaque"><span class="plaque-icon">◆</span><div><small>Server</small><strong id="domain-label">VPN Manager</strong></div></div>
+  </section>
 
-  <div class="nav-main">
-    <button class="nav-btn active" onclick="showSection('accounts')">Akun</button>
-    <button class="nav-btn" onclick="showSection('services')">Services</button>
-  </div>
+  <div class="stats" id="stats-bar">
+        <div class="stat"><div class="stat-top"><div class="l">Services online</div><span class="stat-icon">◉</span></div><div class="v" id="st-svc">—</div><div class="stat-note">Kondisi layanan server</div></div>
+        <div class="stat"><div class="stat-top"><div class="l">Uptime</div><span class="stat-icon">◷</span></div><div class="v" id="st-up">—</div><div class="stat-note">Waktu server berjalan</div></div>
+        <div class="stat"><div class="stat-top"><div class="l">Server load</div><span class="stat-icon">⌁</span></div><div class="v" id="st-load">—</div><div class="stat-note">Rata-rata beban sistem</div></div>
+        <div class="stat"><div class="stat-top"><div class="l">Memory</div><span class="stat-icon">▥</span></div><div class="v" id="st-mem">—</div><div class="stat-note">Penggunaan memori</div></div>
+      </div>
+
+  <div class="dash-layout">
+    <aside class="sidebar" aria-label="Navigasi utama">
+      <div class="side-kicker">Akun</div>
+      <nav class="side-nav">
+        <button class="side-link active" data-menu="create" onclick="showMenu('create', this)"><span class="side-icon">＋</span><span class="side-copy"><b>Buat akun</b><small>Akun VPN baru</small></span><span class="side-arrow">›</span></button>
+        <button class="side-link" data-menu="list" onclick="showMenu('list', this)"><span class="side-icon">▤</span><span class="side-copy"><b>Daftar akun</b><small>Lihat dan cek akun</small></span><span class="side-arrow">›</span></button>
+        <button class="side-link" data-menu="renew" onclick="showMenu('renew', this)"><span class="side-icon">↻</span><span class="side-copy"><b>Perpanjang</b><small>Tambah masa aktif</small></span><span class="side-arrow">›</span></button>
+        <button class="side-link" data-menu="delete" onclick="showMenu('delete', this)"><span class="side-icon">−</span><span class="side-copy"><b>Hapus akun</b><small>Kelola akses akun</small></span><span class="side-arrow">›</span></button>
+        <button class="side-link" data-menu="trial" onclick="showMenu('trial', this)"><span class="side-icon">✧</span><span class="side-copy"><b>Akun trial</b><small>Akses sementara</small></span><span class="side-arrow">›</span></button>
+      </nav>
+      <div class="side-divider"></div>
+      <div class="side-kicker">Sistem</div>
+      <nav class="side-nav">
+        <button class="side-link" data-menu="services" onclick="showMenu('services', this)"><span class="side-icon">⚙</span><span class="side-copy"><b>Service</b><small>Status dan restart</small></span><span class="side-arrow">›</span></button>
+      </nav>
+      <div class="sidebar-foot"><b>FST • MANAGEMENT</b>Panel administrasi server VPN</div>
+    </aside>
+
+    <main class="main-column">
+      
+
+      <div class="view-heading"><div><div class="view-kicker" id="view-kicker">ACCOUNT MANAGEMENT</div><h2 id="view-title">Buat akun baru</h2><p id="view-subtitle">Buat kredensial akses baru untuk protokol pilihan.</p></div><div class="view-tag"><span></span> Workspace</div></div>
 
   <!-- ===== ACCOUNTS ===== -->
   <div id="sec-accounts">
-    <div class="protos">
+    <div class="protocol-panel"><div class="protocol-caption"><small>Konfigurasi</small><strong>Pilih protokol</strong></div><div class="protos">
       <button class="chip active" onclick="switchProto('ssh', this)">SSH</button>
       <button class="chip" onclick="switchProto('vmess', this)">VMess</button>
       <button class="chip" onclick="switchProto('vless', this)">VLess</button>
       <button class="chip" onclick="switchProto('trojan', this)">Trojan</button>
       <button class="chip" onclick="switchProto('shadowsocks', this)">SS</button>
-    </div>
-    <div class="acts">
-      <button class="pill active" onclick="switchAction('create', this)">Buat</button>
-      <button class="pill" onclick="switchAction('list', this)">List / Cek</button>
-      <button class="pill" onclick="switchAction('renew', this)">Renew</button>
-      <button class="pill" onclick="switchAction('delete', this)">Hapus</button>
-      <button class="pill" onclick="switchAction('trial', this)">Trial</button>
-    </div>
+    </div></div>
 
     <div id="panel-create" class="panel">
       <form id="form-create" onsubmit="doCreate(event)">
@@ -1239,7 +1529,7 @@ tr:hover td{background:rgba(99,102,241,.04)}
           <label>Username</label>
           <input type="text" name="user" required placeholder="min. 3 karakter" pattern="[a-zA-Z0-9_-]{3,32}">
           <label>Password</label>
-          <input type="text" name="pass" required placeholder="password">
+          <input type="password" name="pass" autocomplete="new-password" maxlength="256" required placeholder="Password akun">
           <div class="row2">
             <div><label>Masa Aktif (hari)</label><input type="number" name="expi" value="30" min="1" required></div>
             <div><label>Batas IP</label><input type="number" name="iplim" value="2" min="1"></div>
@@ -1311,7 +1601,7 @@ tr:hover td{background:rgba(99,102,241,.04)}
         <h2>Status Service</h2>
         <div class="svc-actions">
           <button class="btn btn-sm btn-outline" onclick="loadServices()">Refresh</button>
-          <button class="btn btn-sm btn-warn" onclick="restartAllXray()">Restart All Xray</button>
+          <button class="btn btn-sm btn-warn" onclick="restartAllXray(this)">Restart All Xray</button>
         </div>
       </div>
       <div id="svc-grid" class="svc-grid">
@@ -1319,26 +1609,76 @@ tr:hover td{background:rgba(99,102,241,.04)}
       </div>
     </div>
   </div>
+    </main>
+  </div>
 </div>
-
+<div id="modal-backdrop" class="modal-backdrop" aria-hidden="true">
+  <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <button type="button" class="modal-close" id="modal-close" aria-label="Tutup">×</button>
+    <h2 id="modal-title" class="modal-title"></h2>
+    <div id="modal-body" class="modal-body"></div>
+    <div id="modal-actions" class="modal-actions"></div>
+  </section>
+</div>
 
 <script>
 (function(){
 "use strict";
 var PREFIX = "{{prefix}}";
+var CSRF_TOKEN = "{{csrf}}";
 var currentProto = "ssh";
 var currentAction = "create";
+var pendingModalResolve = null;
 
 function $(sel, root){ return (root||document).querySelector(sel); }
 function $all(sel, root){ return Array.prototype.slice.call((root||document).querySelectorAll(sel)); }
 
+var viewCopy={
+  create:["ACCOUNT MANAGEMENT","Buat akun baru","Buat kredensial akses baru untuk protokol pilihan."],
+  list:["ACCOUNT DIRECTORY","Daftar akun","Lihat status, masa aktif, dan detail akun yang tersedia."],
+  renew:["ACCOUNT MANAGEMENT","Perpanjang akun","Perbarui masa aktif dan batas akun yang sudah ada."],
+  delete:["ACCOUNT MANAGEMENT","Hapus akun","Hapus akses akun yang tidak lagi digunakan."],
+  trial:["QUICK ACCESS","Buat akun trial","Buat akses sementara dengan durasi terbatas."],
+  services:["SYSTEM OPERATIONS","Status service","Pantau layanan server dan jalankan restart bila diperlukan."]
+};
+function setActiveMenu(key){
+  $all(".side-link").forEach(function(b){b.classList.toggle("active",b.getAttribute("data-menu")===key);});
+}
+function setView(key){
+  var copy=viewCopy[key]||viewCopy.create;
+  var kicker=$("#view-kicker"),title=$("#view-title"),subtitle=$("#view-subtitle");
+  if(kicker)kicker.textContent=copy[0];
+  if(title)title.textContent=copy[1];
+  if(subtitle)subtitle.textContent=copy[2];
+}
+var logoutForm=$("#logout-form");
+if(logoutForm)logoutForm.addEventListener("submit",function(event){
+  if(logoutForm.dataset.submitting==="1"){event.preventDefault();return;}
+  logoutForm.dataset.submitting="1";
+  var button=logoutForm.querySelector(".logout-link");
+  if(button){button.disabled=true;button.classList.add("is-loading");button.textContent="Keluar...";}
+  try{sessionStorage.setItem("fst_logout_pending","1");sessionStorage.removeItem("fst_login_pending");}catch(ignore){}
+  // Default action continues: browser sends POST with hidden csrf_token and follows redirect.
+});
+window.addEventListener("pageshow",function(){
+  if(!logoutForm||logoutForm.dataset.submitting!=="1")return;
+  logoutForm.dataset.submitting="0";
+  var button=logoutForm.querySelector(".logout-link");
+  if(button){button.disabled=false;button.classList.remove("is-loading");button.innerHTML="<span>↗</span> Logout";}
+});
+
 function showSection(sec){
-  $("#sec-accounts").classList.toggle("hidden", sec !== "accounts");
-  $("#sec-services").classList.toggle("hidden", sec !== "services");
-  $all(".nav-btn").forEach(function(b,i){
-    b.classList.toggle("active", (sec==="accounts"&&i===0)||(sec==="services"&&i===1));
-  });
-  if(sec === "services") loadServices();
+  var accounts=$("#sec-accounts"),services=$("#sec-services");
+  if(accounts)accounts.classList.toggle("hidden",sec!=="accounts");
+  if(services)services.classList.toggle("hidden",sec!=="services");
+  var key=sec==="services"?"services":currentAction;
+  setActiveMenu(key);setView(key);
+  if(sec==="services")loadServices();
+}
+function showMenu(key,el){
+  if(key==="services"){showSection("services");return;}
+  showSection("accounts");
+  switchAction(key,el);
 }
 
 function switchProto(p, el){
@@ -1353,24 +1693,15 @@ function switchProto(p, el){
 
 function switchAction(a, el){
   currentAction = a;
-  $all(".pill").forEach(function(t){ t.classList.remove("active"); });
-  if(el) el.classList.add("active");
   ["create","list","renew","delete","trial"].forEach(function(x){
-    var p = $("#panel-"+x);
-    if(p) p.classList.toggle("hidden", x !== a);
+    var p=$("#panel-"+x);
+    if(p)p.classList.toggle("hidden",x!==a);
   });
-  if(a === "list") loadList();
+  setActiveMenu(a);setView(a);
+  if(a==="list")loadList();
 }
 
-function switchActionByName(a){
-  currentAction = a;
-  var names = ["create","list","renew","delete","trial"];
-  $all(".pill").forEach(function(t,i){ t.classList.toggle("active", names[i]===a); });
-  names.forEach(function(x){
-    var p = $("#panel-"+x);
-    if(p) p.classList.toggle("hidden", x !== a);
-  });
-}
+function switchActionByName(a){ showMenu(a); }
 
 function updateCreateForm(){
   var s = currentProto === "ssh";
@@ -1391,17 +1722,58 @@ function updateCreateForm(){
 function api(path, body){
   return fetch(PREFIX + "/api/" + path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF_TOKEN },
     credentials: "same-origin",
     body: JSON.stringify(body || {})
   }).then(function(r){ return r.json(); });
 }
 
+function escapeHTML(value){
+  return String(value == null ? "" : value).replace(/[&<>"']/g, function(ch){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch];
+  });
+}
 function showResult(id, ok, html){
   var el = document.getElementById(id);
   if(!el) return;
   el.className = "result show" + (ok ? "" : " error");
   el.innerHTML = html;
+}
+function showModal(title, bodyHTML, actionsHTML){
+  var back = $("#modal-backdrop");
+  $("#modal-title").textContent = title;
+  $("#modal-body").innerHTML = bodyHTML;
+  $("#modal-actions").innerHTML = actionsHTML || '<button type="button" class="btn" id="modal-ok">Tutup</button>';
+  back.classList.add("open"); back.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+  var close = function(){ hideModal(); };
+  var closeBtn = $("#modal-close"), okBtn = $("#modal-ok");
+  if(closeBtn) closeBtn.onclick = close;
+  if(okBtn) okBtn.onclick = close;
+  setTimeout(function(){ var first = $("#modal-actions button") || closeBtn; if(first) first.focus(); }, 40);
+}
+function hideModal(){
+  var back = $("#modal-backdrop");
+  if(!back) return;
+  back.classList.remove("open"); back.setAttribute("aria-hidden", "true");
+  document.body.style.overflow = "";
+  if(pendingModalResolve){ var resolve = pendingModalResolve; pendingModalResolve = null; resolve(false); }
+}
+function confirmDelete(user, proto){
+  return new Promise(function(resolve){
+    pendingModalResolve = resolve;
+    var safeUser = escapeHTML(user);
+    showModal("Konfirmasi hapus akun", '<div class="success-mark" style="background:rgba(239,68,68,.14);border-color:rgba(239,68,68,.3);color:#fca5a5">!</div><p>Yakin ingin menghapus akun <b>' + safeUser + '</b> (' + escapeHTML(proto.toUpperCase()) + ')?</p><p class="warn-t" style="margin:10px 0 0">Tindakan ini permanen dan tidak dapat dibatalkan.</p>', '<button type="button" class="btn btn-outline" id="modal-cancel">Batal</button><button type="button" class="btn btn-danger" id="modal-confirm">Hapus akun</button>');
+    $("#modal-cancel").onclick = function(){ hideModal(); };
+    $("#modal-confirm").onclick = function(){ pendingModalResolve = null; hideModal(); resolve(true); };
+  });
+}
+document.addEventListener("keydown", function(e){ if(e.key === "Escape") hideModal(); });
+document.addEventListener("click", function(e){ if(e.target && e.target.id === "modal-backdrop") hideModal(); });
+function setBusy(btn, label, busy){
+  if(!btn) return;
+  if(busy){ btn.disabled = true; btn.classList.add("is-loading"); btn.dataset.originalText = btn.textContent; btn.textContent = label; }
+  else{ btn.disabled = false; btn.classList.remove("is-loading"); btn.textContent = btn.dataset.originalText || label; }
 }
 
 function toast(msg, ok){
@@ -1416,14 +1788,14 @@ function formatLinks(j){
   var h = "";
   function add(label, val){
     if(!val) return;
-    h += '<div class="link-box"><b>' + label + '</b><br>' + val + '</div>';
-    h += '<button type="button" class="copy" data-copy="' + encodeURIComponent(val) + '">Copy ' + label + '</button>';
+    h += '<div class="link-box"><b>' + escapeHTML(label) + '</b><br>' + escapeHTML(val) + '</div>';
+    h += '<button type="button" class="copy" data-copy="' + encodeURIComponent(val) + '">Copy ' + escapeHTML(label) + '</button>';
   }
   add("TLS", j.tls);
   add("Non-TLS", j.nontls);
   add("gRPC", j.grpc);
   add("WS", j.ws);
-  if(j.link) h += '<br><a href="' + j.link + '" target="_blank" style="color:#a5b4fc;font-size:.84rem">Download Config</a>';
+  if(j.link) h += '<br><a href="' + escapeHTML(j.link) + '" target="_blank" rel="noopener noreferrer" style="color:#a5b4fc;font-size:.84rem">Download Config</a>';
   return h;
 }
 
@@ -1454,31 +1826,23 @@ document.addEventListener("click", function(e){
 function doCreate(e){
   e.preventDefault();
   var f = e.target, btn = f.querySelector("button[type=submit]");
-  btn.disabled = true;
-  var old = btn.textContent;
-  btn.textContent = "Membuat...";
-  var data;
-  if(currentProto === "ssh"){
-    data = { user: f.user.value, pass: f.pass.value, expi: f.expi.value, iplim: f.iplim.value };
-  } else {
-    data = { user: f.user_x.value, expi: f.expi_x.value, quota: f.quota.value, iplim: f.iplim_x.value };
-  }
+  setBusy(btn, "Membuat akun...", true);
+  var data = currentProto === "ssh"
+    ? { user: f.user.value, pass: f.pass.value, expi: f.expi.value, iplim: f.iplim.value }
+    : { user: f.user_x.value, expi: f.expi_x.value, quota: f.quota.value, iplim: f.iplim_x.value };
   api(currentProto, data).then(function(j){
     if(j.ok){
-      var h = "<b>Berhasil dibuat</b><br><br><b>User:</b> " + j.user + "<br>";
-      if(j.pass) h += "<b>Pass:</b> " + j.pass + "<br>";
-      if(j.uuid) h += "<b>UUID:</b> " + j.uuid + "<br>";
-      if(j.password) h += "<b>Pass:</b> " + j.password + "<br>";
-      if(j.method) h += "<b>Method:</b> " + j.method + "<br>";
-      h += "<b>Expired:</b> " + j.expired + "<br>" + formatLinks(j);
-      showResult("result-create", true, h);
-    } else showResult("result-create", false, (j.msg || "Gagal"));
-  }).catch(function(err){
-    showResult("result-create", false, err.message);
-  }).then(function(){
-    btn.disabled = false;
-    btn.textContent = old;
-  });
+      var h = '<div class="success-mark">✓</div><b>Akun berhasil dibuat</b><br><br><b>User:</b> ' + escapeHTML(j.user) + '<br>';
+      if(j.pass) h += '<b>Password:</b> ' + escapeHTML(j.pass) + '<br>';
+      if(j.uuid) h += '<b>UUID:</b> ' + escapeHTML(j.uuid) + '<br>';
+      if(j.password) h += '<b>Password:</b> ' + escapeHTML(j.password) + '<br>';
+      if(j.method) h += '<b>Metode:</b> ' + escapeHTML(j.method) + '<br>';
+      h += '<b>Kedaluwarsa:</b> ' + escapeHTML(j.expired) + '<br>' + formatLinks(j);
+      showResult("result-create", true, h); showModal("Akun siap digunakan", h);
+      f.reset();
+    } else showResult("result-create", false, escapeHTML(j.msg || "Gagal membuat akun"));
+  }).catch(function(err){ showResult("result-create", false, escapeHTML(err.message)); })
+    .then(function(){ setBusy(btn, "Buat akun", false); updateCreateForm(); });
 }
 
 function loadList(){
@@ -1487,41 +1851,41 @@ function loadList(){
   fetch(PREFIX + "/api/list/" + currentProto, { credentials: "same-origin" })
     .then(function(r){ return r.json(); })
     .then(function(j){
-      if(!j.ok){ box.innerHTML = '<div class="empty" style="color:#f87171">' + (j.msg||"Gagal") + '</div>'; return; }
+      if(!j.ok){ box.innerHTML = '<div class="empty" style="color:#f87171">' + escapeHTML(j.msg||"Gagal") + '</div>'; return; }
       if(!j.users || !j.users.length){ box.innerHTML = '<div class="empty">Belum ada akun ' + currentProto.toUpperCase() + '</div>'; return; }
       var h = '<div class="twrap"><table><thead><tr><th>User</th><th>Expired</th><th>Sisa</th>';
       if(currentProto !== "ssh") h += "<th>Kuota</th>";
       h += "<th>IP</th><th>Aksi</th></tr></thead><tbody>";
       j.users.forEach(function(u){
         var b = u.days_left > 7 ? "badge-ok" : (u.days_left > 0 ? "badge-warn" : "badge-exp");
-        h += "<tr><td><b>" + u.user + "</b></td>";
-        h += "<td style='color:#8494ad;font-size:.76rem'>" + u.expired + "</td>";
-        h += "<td><span class='badge " + b + "'>" + u.days_left + " hari</span></td>";
-        if(currentProto !== "ssh") h += "<td>" + (u.quota_gb||0) + " GB</td>";
-        h += "<td>" + (u.ip_limit||"-") + "</td><td class='actions'>";
-        h += "<button class='act-cek' data-act='cek' data-user='" + u.user + "'>Cek</button>";
-        h += "<button class='act-renew' data-act='renew' data-user='" + u.user + "'>Renew</button>";
-        h += "<button class='act-del' data-act='del' data-user='" + u.user + "'>Hapus</button></td></tr>";
+        h += "<tr><td><b>" + escapeHTML(u.user) + "</b></td>";
+        h += "<td style='color:#8494ad;font-size:.76rem'>" + escapeHTML(u.expired) + "</td>";
+        h += "<td><span class='badge " + b + "'>" + escapeHTML(u.days_left) + " hari</span></td>";
+        if(currentProto !== "ssh") h += "<td>" + escapeHTML(u.quota_gb||0) + " GB</td>";
+        h += "<td>" + escapeHTML(u.ip_limit||"-") + "</td><td class='actions'>";
+        h += "<button class='act-cek' data-act='cek' data-user='" + escapeHTML(u.user) + "'>Cek</button>";
+        h += "<button class='act-renew' data-act='renew' data-user='" + escapeHTML(u.user) + "'>Renew</button>";
+        h += "<button class='act-del' data-act='del' data-user='" + escapeHTML(u.user) + "'>Hapus</button></td></tr>";
       });
       h += "</tbody></table></div>";
       box.innerHTML = h;
     })
     .catch(function(err){
-      box.innerHTML = '<div class="empty" style="color:#f87171">' + err.message + '</div>';
+      box.innerHTML = '<div class="empty" style="color:#f87171">' + escapeHTML(err.message) + '</div>';
     });
 }
 
 function cekUser(user){
   api("cek/" + currentProto, { user: user }).then(function(j){
     if(j.ok){
-      var h = "<b>" + user + "</b><br><br><b>Expired:</b> " + j.expired + " (" + j.days_left + " hari)<br>";
-      if(j.uuid) h += "<b>UUID:</b> " + j.uuid + "<br>";
-      if(j.password) h += "<b>Pass:</b> " + j.password + "<br>";
-      if(j.quota_gb !== undefined) h += "<b>Kuota:</b> " + j.quota_gb + " GB<br>";
-      h += "<b>IP:</b> " + (j.ip_limit||"-") + "<br>" + formatLinks(j);
+      var h = "<b>" + escapeHTML(user) + "</b><br><br><b>Expired:</b> " + escapeHTML(j.expired) + " (" + escapeHTML(j.days_left) + " hari)<br>";
+      if(j.uuid) h += "<b>UUID:</b> " + escapeHTML(j.uuid) + "<br>";
+      if(j.password) h += "<b>Pass:</b> " + escapeHTML(j.password) + "<br>";
+      if(j.quota_gb !== undefined) h += "<b>Kuota:</b> " + escapeHTML(j.quota_gb) + " GB<br>";
+      h += "<b>IP:</b> " + escapeHTML(j.ip_limit||"-") + "<br>" + formatLinks(j);
       showResult("result-list", true, h);
-    } else showResult("result-list", false, j.msg||"Gagal");
-  }).catch(function(err){ showResult("result-list", false, err.message); });
+    } else showResult("result-list", false, escapeHTML(j.msg||"Gagal"));
+  }).catch(function(err){ showResult("result-list", false, escapeHTML(err.message)); });
 }
 
 function fillRenew(u){
@@ -1538,46 +1902,50 @@ function fillDelete(u){
 function doRenew(e){
   e.preventDefault();
   var f = e.target, btn = f.querySelector("button");
-  btn.disabled = true; btn.textContent = "Proses...";
+  setBusy(btn, "Memperpanjang...", true);
   var data = { user: f.user.value, expi: f.expi.value };
   if(f.iplim.value) data.iplim = f.iplim.value;
   if(f.quota && f.quota.value !== "") data.quota = f.quota.value;
   api("renew/" + currentProto, data).then(function(j){
     if(j.ok){
-      showResult("result-renew", true, "<b>Berhasil diperpanjang</b><br><br><b>User:</b> " + j.user + "<br><b>Lama:</b> " + j.old_expired + "<br><b>Baru:</b> " + j.expired + "<br><b>+" + j.days_added + " hari</b>");
-    } else showResult("result-renew", false, j.msg||"Gagal");
-  }).catch(function(err){ showResult("result-renew", false, err.message); })
-  .then(function(){ btn.disabled = false; btn.textContent = "Perpanjang"; });
+      var h = '<div class="success-mark">✓</div><b>Akun berhasil diperpanjang</b><br><br><b>User:</b> ' + escapeHTML(j.user) + '<br><b>Sebelumnya:</b> ' + escapeHTML(j.old_expired) + '<br><b>Sekarang:</b> ' + escapeHTML(j.expired) + '<br><b>+' + escapeHTML(j.days_added) + ' hari</b>';
+      showResult("result-renew", true, h); showModal("Perpanjangan berhasil", h);
+    } else showResult("result-renew", false, escapeHTML(j.msg||"Gagal"));
+  }).catch(function(err){ showResult("result-renew", false, escapeHTML(err.message)); })
+    .then(function(){ setBusy(btn, "Perpanjang", false); });
 }
 
 function doDelete(e){
   e.preventDefault();
-  var f = e.target, user = f.user.value;
-  if(!confirm("Hapus akun " + user + " (" + currentProto + ")?")) return;
-  var btn = f.querySelector("button");
-  btn.disabled = true; btn.textContent = "Menghapus...";
-  api("del/" + currentProto, { user: user }).then(function(j){
-    if(j.ok){ showResult("result-delete", true, "<b>" + j.msg + "</b>"); f.user.value = ""; }
-    else showResult("result-delete", false, j.msg||"Gagal");
-  }).catch(function(err){ showResult("result-delete", false, err.message); })
-  .then(function(){ btn.disabled = false; btn.textContent = "Hapus Akun"; });
+  var f = e.target, user = f.user.value, btn = f.querySelector("button");
+  confirmDelete(user, currentProto).then(function(confirmed){
+    if(!confirmed) return;
+    setBusy(btn, "Menghapus...", true);
+    api("del/" + currentProto, { user: user }).then(function(j){
+      if(j.ok){
+        var h = '<div class="success-mark">✓</div><b>Akun berhasil dihapus</b><br><br>' + escapeHTML(j.msg);
+        showResult("result-delete", true, h); showModal("Penghapusan selesai", h); f.user.value = "";
+      } else showResult("result-delete", false, escapeHTML(j.msg||"Gagal"));
+    }).catch(function(err){ showResult("result-delete", false, escapeHTML(err.message)); })
+      .then(function(){ setBusy(btn, "Hapus Akun", false); });
+  });
 }
 
 function doTrial(e){
   e.preventDefault();
   var f = e.target, btn = f.querySelector("button");
-  btn.disabled = true; btn.textContent = "Membuat...";
+  setBusy(btn, "Membuat trial...", true);
   api("trial/" + currentProto, { expi: f.expi.value }).then(function(j){
     if(j.ok){
-      var h = "<b>Trial OK</b><br><br><b>User:</b> " + j.user + "<br>";
-      if(j.pass) h += "<b>Pass:</b> " + j.pass + "<br>";
-      if(j.uuid) h += "<b>UUID:</b> " + j.uuid + "<br>";
-      if(j.password) h += "<b>Pass:</b> " + j.password + "<br>";
-      h += "<b>Expired:</b> " + j.expired + "<br>" + formatLinks(j);
-      showResult("result-trial", true, h);
-    } else showResult("result-trial", false, j.msg||"Gagal");
-  }).catch(function(err){ showResult("result-trial", false, err.message); })
-  .then(function(){ btn.disabled = false; btn.textContent = "Buat Trial"; });
+      var h = '<div class="success-mark">✓</div><b>Akun trial berhasil dibuat</b><br><br><b>User:</b> ' + escapeHTML(j.user) + '<br>';
+      if(j.pass) h += '<b>Password:</b> ' + escapeHTML(j.pass) + '<br>';
+      if(j.uuid) h += '<b>UUID:</b> ' + escapeHTML(j.uuid) + '<br>';
+      if(j.password) h += '<b>Password:</b> ' + escapeHTML(j.password) + '<br>';
+      h += '<b>Kedaluwarsa:</b> ' + escapeHTML(j.expired) + '<br>' + formatLinks(j);
+      showResult("result-trial", true, h); showModal("Trial siap digunakan", h);
+    } else showResult("result-trial", false, escapeHTML(j.msg||"Gagal"));
+  }).catch(function(err){ showResult("result-trial", false, escapeHTML(err.message)); })
+    .then(function(){ setBusy(btn, "Buat Trial", false); });
 }
 
 function loadServices(){
@@ -1586,7 +1954,7 @@ function loadServices(){
   fetch(PREFIX + "/api/services", { credentials: "same-origin" })
     .then(function(r){ return r.json(); })
     .then(function(j){
-      if(!j.ok){ grid.innerHTML = '<div class="empty">' + (j.msg||"Gagal") + '</div>'; return; }
+      if(!j.ok){ grid.innerHTML = '<div class="empty">' + escapeHTML(j.msg||"Gagal") + '</div>'; return; }
       if(j.domain){ var dl = $("#domain-label"); if(dl) dl.textContent = j.domain; }
       var st = $("#st-svc");
       if(st) st.innerHTML = '<span class="' + (j.online===j.total?'ok':'warn') + '">' + j.online + '/' + j.total + ' online</span>';
@@ -1602,39 +1970,44 @@ function loadServices(){
       grid.innerHTML = html;
     })
     .catch(function(err){
-      if(grid) grid.innerHTML = '<div class="empty" style="color:#f87171">' + err.message + '</div>';
+      if(grid) grid.innerHTML = '<div class="empty" style="color:#f87171">' + escapeHTML(err.message) + '</div>';
     });
 }
 
 function svcCard(s){
   var on = s.active;
   return '<div class="svc-card ' + (on?'up':'down') + '">' +
-    '<div class="svc-top"><div class="svc-name"><span class="dot ' + (on?'on':'off') + '"></span>' + s.name + '</div>' +
+    '<div class="svc-top"><div class="svc-name"><span class="dot ' + (on?'on':'off') + '"></span>' + escapeHTML(s.name) + '</div>' +
     '<span class="badge ' + (on?'badge-ok':'badge-exp') + '">' + (on?'Active':'Down') + '</span></div>' +
-    '<div class="svc-meta"><code>' + s.unit + '</code> · ' + (s.status||'?') + '</div>' +
-    '<button class="svc-btn" data-act="restart" data-unit="' + s.unit + '">Restart</button></div>';
+    '<div class="svc-meta"><code>' + escapeHTML(s.unit) + '</code> · ' + escapeHTML(s.status||'?') + '</div>' +
+    '<button class="svc-btn" data-act="restart" data-unit="' + escapeHTML(s.unit) + '">Restart</button></div>';
 }
 
 function restartSvc(unit, btn){
-  if(btn){ btn.disabled = true; btn.textContent = "Restarting..."; }
+  if(btn){ btn.disabled = true; btn.classList.add("is-loading"); btn.textContent = "Restarting..."; }
   api("services/restart", { unit: unit }).then(function(j){
-    if(j.ok){ toast(unit + " restarted", true); setTimeout(loadServices, 800); }
+    if(j.ok){ showModal("Service berhasil di-restart", '<div class="success-mark">✓</div><p>' + escapeHTML(unit) + ' berhasil dimulai ulang.</p>'); setTimeout(loadServices, 800); }
     else toast(j.msg||"Gagal restart", false);
   }).catch(function(err){ toast(err.message, false); })
-  .then(function(){ if(btn){ btn.disabled = false; btn.textContent = "Restart"; } });
+  .then(function(){ if(btn){ btn.disabled = false; btn.classList.remove("is-loading"); btn.textContent = "Restart"; } });
 }
 
-function restartAllXray(){
-  if(!confirm("Restart semua service Xray?")) return;
-  toast("Restarting Xray...", true);
-  api("services/restart-all", {}).then(function(j){
-    if(j.ok){ toast("Semua Xray di-restart", true); setTimeout(loadServices, 1000); }
-    else toast(j.msg||"Gagal", false);
-  }).catch(function(err){ toast(err.message, false); });
+function restartAllXray(btn){
+  showModal("Restart semua service Xray?", '<p>Semua layanan VMess, VLess, Trojan, dan Shadowsocks akan dimulai ulang.</p><p class="hint" style="margin:10px 0 0">Koneksi aktif dapat terputus sebentar.</p>', '<button type="button" class="btn btn-outline" id="modal-cancel">Batal</button><button type="button" class="btn btn-warn" id="modal-confirm">Restart semua</button>');
+  $("#modal-cancel").onclick = hideModal;
+  $("#modal-confirm").onclick = function(){
+    hideModal(); setBusy(btn, "Restarting...", true);
+    api("services/restart-all", {}).then(function(j){
+      if(j.ok){ showModal("Restart berhasil", '<div class="success-mark">✓</div><p>Semua service Xray berhasil dimulai ulang.</p>'); setTimeout(loadServices, 1000); }
+      else toast(j.msg||"Gagal", false);
+    }).catch(function(err){ toast(err.message, false); })
+      .then(function(){ setBusy(btn, "Restart All Xray", false); });
+  };
 }
 
 // Wire onclick from HTML attributes that pass this
 window.showSection = showSection;
+window.showMenu = showMenu;
 window.switchProto = function(p, el){ switchProto(p, el || (typeof event!=='undefined' && event.currentTarget)); };
 window.switchAction = function(a, el){ switchAction(a, el || (typeof event!=='undefined' && event.currentTarget)); };
 window.doCreate = doCreate;
@@ -1650,6 +2023,12 @@ window.fillDelete = fillDelete;
 
 updateCreateForm();
 loadServices();
+try{
+  if(sessionStorage.getItem("fst_login_pending")==="1"){
+    sessionStorage.removeItem("fst_login_pending");
+    setTimeout(function(){showModal("Berhasil masuk", '<div class="success-mark">✓</div><p>Selamat datang di FST Panel.</p>');},120);
+  }
+}catch(ignore){}
 setInterval(function(){
   var sec = $("#sec-services");
   if(sec && !sec.classList.contains("hidden")) loadServices();
@@ -1659,11 +2038,9 @@ setInterval(function(){
 </body>
 </html>
 '''
-
 if __name__ == "__main__":
-    print(f"FST Panel running → http://0.0.0.0:{PORT}")
-    print(f"Akses: http://domain{PREFIX}")
-    print(f"Login: {ADMIN_USER} / {ADMIN_PASS}")
+    print(f"FST Panel listening on 0.0.0.0:{PORT}")
+    print(f"Akses melalui reverse proxy HTTPS: https://domain{PREFIX}")
     print("API endpoints:")
     print("  POST /panel/api/ssh|vmess|vless|trojan|shadowsocks  → buat")
     print("  GET/POST /panel/api/list/<proto>                    → list")
