@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+CREDENTIALS_FILE="${FST_CREDENTIALS_FILE:-/etc/fst-api/credentials.json}"
+export FST_CREDENTIALS_FILE="$CREDENTIALS_FILE"
+
+if [[ "$EUID" -ne 0 ]]; then
+  printf 'Jalankan sebagai root: sudo bash %q\n' "$0" >&2
+  exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  printf 'Python 3 diperlukan, tetapi tidak ditemukan.\n' >&2
+  exit 1
+fi
+if [[ ! -f "$CREDENTIALS_FILE" || -L "$CREDENTIALS_FILE" ]]; then
+  printf 'Berkas konfigurasi tidak ditemukan atau berupa symlink: %s\n' "$CREDENTIALS_FILE" >&2
+  exit 1
+fi
+
+# Helper Python menangani JSON dan penulisan atomik.
+# Nilai rahasia selalu dikirim melalui stdin, bukan argumen proses.
+PY_HELPER=$(cat <<'PY'
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+
+CONFIG = Path(os.environ["FST_CREDENTIALS_FILE"])
+REQUIRED = ("api_key", "admin_user", "admin_pass", "secret_key")
+
+
+def load_config():
+    if CONFIG.is_symlink() or not CONFIG.is_file():
+        raise ValueError("Berkas konfigurasi tidak ada atau bukan berkas biasa")
+    with CONFIG.open("r", encoding="utf-8") as stream:
+        data = json.load(stream)
+    if not isinstance(data, dict):
+        raise ValueError("Format konfigurasi harus berupa objek JSON")
+    for key in REQUIRED:
+        if not isinstance(data.get(key), str) or not data[key]:
+            raise ValueError(f"Nilai {key} tidak ada atau tidak valid")
+    return data
+
+
+def set_value(field):
+    if field not in REQUIRED:
+        raise ValueError("Nama field tidak dikenal")
+    value = sys.stdin.read()
+    if not value or len(value) > 4096 or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("Nilai kosong, terlalu panjang, atau mengandung karakter kontrol")
+
+    if field == "admin_user":
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{3,32}", value):
+            raise ValueError("Username harus 3-32 karakter: huruf, angka, _ atau -")
+    elif field == "admin_pass":
+        if not 3 <= len(value) <= 1024:
+            raise ValueError("Password harus sepanjang 3-1024 karakter")
+    elif value.strip() != value or any(char.isspace() for char in value):
+        raise ValueError("API key/secret key tidak boleh berisi spasi atau whitespace")
+
+    data = load_config()
+    data[field] = value
+
+    fd, temp_name = tempfile.mkstemp(prefix="." + CONFIG.name + ".", dir=str(CONFIG.parent))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_name, CONFIG)
+        dir_fd = os.open(CONFIG.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+    print("Berhasil diperbarui.")
+
+
+def show_values():
+    data = load_config()
+    print(f"Berkas: {CONFIG}")
+    for key in REQUIRED:
+        # Escape karakter kontrol agar isi rahasia tidak dapat mengubah tampilan terminal.
+        safe_value = data[key].encode("unicode_escape").decode("ascii")
+        if key == "admin_pass" and data[key].startswith("pbkdf2_sha256$"):
+            print(f"{key}: {safe_value}  (hash PBKDF2; password asli tidak bisa dipulihkan dari hash)")
+        else:
+            print(f"{key}: {safe_value}")
+    mode = CONFIG.stat().st_mode & 0o777
+    if mode & 0o077:
+        print(f"PERINGATAN: izin berkas saat ini {mode:04o}; batasi dengan chmod 600.")
+
+
+def main():
+    action = sys.argv[1]
+    if action == "show":
+        show_values()
+    elif action == "set" and len(sys.argv) == 3:
+        set_value(sys.argv[2])
+    else:
+        raise ValueError("Perintah internal tidak dikenal")
+
+
+try:
+    main()
+except Exception as error:
+    print(f"Gagal: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+)
+
+py() {
+  python3 -c "$PY_HELPER" "$@"
+}
+
+if [[ -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_CYAN=$'\033[36m'
+  C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'; C_BLUE=$'\033[34m'
+else
+  C_RESET=''; C_BOLD=''; C_CYAN=''; C_GREEN=''; C_YELLOW=''; C_RED=''; C_BLUE=''
+fi
+
+header() {
+  printf '\n%b╔══════════════════════════════════════════════════════╗%b\n' "$C_CYAN" "$C_RESET"
+  printf '%b║       FST API  •  PENGELOLA KREDENSIAL             ║%b\n' "$C_CYAN$C_BOLD" "$C_RESET"
+  printf '%b╚══════════════════════════════════════════════════════╝%b\n' "$C_CYAN" "$C_RESET"
+  printf '  Konfigurasi: %s\n\n' "$CREDENTIALS_FILE"
+}
+
+pause() {
+  printf '\nTekan Enter untuk kembali ke menu...'
+  IFS= read -r _ || true
+}
+
+confirm_reveal() {
+  printf '%bRahasia akan tampil di layar terminal.%b\n' "$C_YELLOW" "$C_RESET"
+  printf 'Lanjutkan dan tampilkan API key, username, password tersimpan, serta secret key? [y/N] '
+  local answer
+  IFS= read -r answer || return 1
+  [[ "$answer" == "y" || "$answer" == "Y" ]]
+}
+
+restart_fst_api() {
+  printf '%bMemulai ulang fst-api...%b\n' "$C_CYAN" "$C_RESET"
+  if systemctl restart fst-api && systemctl is-active --quiet fst-api; then
+    printf '%bfst-api berhasil dimulai ulang.%b\n' "$C_GREEN" "$C_RESET"
+  else
+    printf '%bKredensial tersimpan, tetapi fst-api gagal aktif. Cek: sudo journalctl -u fst-api -n 40 --no-pager%b\n' "$C_RED" "$C_RESET"
+    return 1
+  fi
+}
+
+update_public_field() {
+  local field="$1" label="$2" value
+  printf '%s baru: ' "$label"
+  IFS= read -r value || return 1
+  if [[ -z "$value" ]]; then
+    printf '%bNilai tidak boleh kosong.%b\n' "$C_RED" "$C_RESET"
+    return 1
+  fi
+  if printf '%s' "$value" | py set "$field"; then
+    printf '%bSelesai.%b\n' "$C_GREEN" "$C_RESET"
+    restart_fst_api
+  else
+    return 1
+  fi
+}
+
+update_secret_field() {
+  local field="$1" label="$2" value confirm
+  IFS= read -r -s -p "$label baru (input disembunyikan): " value || { printf '\n'; return 1; }
+  printf '\n'
+  IFS= read -r -s -p "Ulangi $label: " confirm || { printf '\n'; unset value confirm; return 1; }
+  printf '\n'
+  if [[ "$value" != "$confirm" ]]; then
+    printf '%bNilai tidak cocok; tidak ada perubahan.%b\n' "$C_RED" "$C_RESET"
+    unset value confirm
+    return 1
+  fi
+  if [[ -z "$value" ]]; then
+    printf '%bNilai tidak boleh kosong.%b\n' "$C_RED" "$C_RESET"
+    unset value confirm
+    return 1
+  fi
+  if printf '%s' "$value" | py set "$field"; then
+    printf '%bSelesai.%b\n' "$C_GREEN" "$C_RESET"
+    restart_fst_api
+  else
+    unset value confirm
+    return 1
+  fi
+  unset value confirm
+}
+
+while true; do
+  header
+  printf '%b  1)%b Tampilkan seluruh nilai kredensial\n' "$C_BLUE$C_BOLD" "$C_RESET"
+  printf '%b  2)%b Ganti username admin\n' "$C_BLUE$C_BOLD" "$C_RESET"
+  printf '%b  3)%b Ganti password admin\n' "$C_BLUE$C_BOLD" "$C_RESET"
+  printf '%b  4)%b Ganti API key\n' "$C_BLUE$C_BOLD" "$C_RESET"
+  printf '%b  5)%b Ganti secret key\n' "$C_BLUE$C_BOLD" "$C_RESET"
+  printf '%b  0)%b Keluar\n\n' "$C_BLUE$C_BOLD" "$C_RESET"
+  printf 'Pilih menu: '
+  IFS= read -r choice || break
+
+  case "$choice" in
+    1)
+      if confirm_reveal; then
+        py show || true
+      else
+        printf 'Dibatalkan.\n'
+      fi
+      pause
+      ;;
+    2)
+      update_public_field admin_user 'Username admin' || true
+      pause
+      ;;
+    3)
+      update_secret_field admin_pass 'Password admin' || true
+      pause
+      ;;
+    4)
+      update_secret_field api_key 'API key' || true
+      pause
+      ;;
+    5)
+      update_secret_field secret_key 'Secret key' || true
+      pause
+      ;;
+    0)
+      printf '%bSampai jumpa.%b\n' "$C_GREEN" "$C_RESET"
+      exit 0
+      ;;
+    *)
+      printf '%bPilihan tidak valid.%b\n' "$C_RED" "$C_RESET"
+      pause
+      ;;
+  esac
+done
+

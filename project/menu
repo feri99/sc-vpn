@@ -237,7 +237,7 @@ display_menu() {
     echo -e ""
     echo -e "       ${green}[1]${neutral} Kelola SSH/OpenVPN    ║     ${green}[5]${neutral} Kelola Shadowsocks"
     echo -e "       ${green}[2]${neutral} Kelola VMess          ║     ${green}[6]${neutral} Setup Bot Notifikasi"
-    echo -e "       ${green}[3]${neutral} Kelola VLess          ║     ${green}[7]${neutral} Menu Bot Telegram (Segera)"
+    echo -e "       ${green}[3]${neutral} Kelola VLess          ║     ${green}[7]${neutral} Menu FST API MANAGER"
     echo -e "       ${green}[4]${neutral} Kelola Trojan         ║     ${green}[8]${neutral} Menu Features"
     echo -e ""
     echo -e "                          ${red}[x]${neutral} Keluar dari Panel"
@@ -279,17 +279,30 @@ display_menu() {
             setup_bot_telegram 
             ;;
         7 | 07) 
-            if [ ! -f /usr/bin/botserver ]; then
-                echo -e "${red}Error: Bot server belum diinstall. Silahkan install terlebih dahulu.${neutral}"
-                echo -e "${yellow}Kembali ke menu utama dalam 5 detik...${neutral}"
-                sleep 5
-                display_menu
-                return
-            fi
-            echo -e "${cyan}Membuka menu Bot Telegram...${neutral}"
-            menu_bot_telegram 
-            display_menu 
-            ;;
+            if [ ! -f /etc/fst-api/credentials.json ]; then 
+
+echo -e "${red}Error: FST API belum diinstall atau kredensial tidak ditemukan.${neutral}" 
+
+sleep 5 
+ display_menu 
+ return 
+ fi 
+
+if [ ! -x /usr/bin/fst ]; then 
+
+echo -e "${red}Error: Menu kredensial FST API belum dipasang.${neutral}" 
+
+sleep 5 
+ display_menu 
+ return 
+ fi 
+
+echo -e "${cyan}Membuka menu kredensial FST API...${neutral}" 
+
+fst 
+
+display_menu 
+ ;;
         8 | 08) 
             echo -e "${cyan}Membuka menu Features...${neutral}"
             features
