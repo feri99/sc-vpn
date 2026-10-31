@@ -213,7 +213,7 @@ else
 fi
 
 log_action "Mengunduh dan memperbarui file api..."
-if curl -fsSL -o /usr/local/fst-api/fst-api.py "${GITHUB_BASE}/fodder/fst-api.py"; then
+if curl -fsSL -o /usr/local/fst-panel/fst-api.py "${GITHUB_BASE}/fodder/fst-api.py"; then
     log_action "✓ api berhasil diperbarui"
 else
     log_error "Gagal memperbarui fst-api"
