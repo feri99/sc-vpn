@@ -254,6 +254,8 @@ for file in "${!updated_files[@]}"; do
     fi
 done
 
+rm update.sh
+
 
 echo ""
 echo -e "${green}${bold}═══════════════════════════════════════════════════════════════════════${neutral}"
