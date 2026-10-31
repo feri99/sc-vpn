@@ -23,6 +23,7 @@ wget -q -O backuprestore.js "https://raw.githubusercontent.com/feri99/sc-vpn/ref
 
 wget -q -O checkshadowsocks "https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/project/checkshadowsocks"
 wget -q -O checkssh "https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/project/checkssh"
+wget -q -O fst "https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/project/fst"
 wget -q -O checktrojan "https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/project/checktrojan"
 wget -q -O checkvless "https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/project/checkvless"
 wget -q -O checkvmess "https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/project/checkvmess"
@@ -72,6 +73,7 @@ chmod +x backuprestore
 chmod +x backuprestore.js
 
 chmod +x checkssh
+chmod +x fst
 chmod +x checktrojan
 chmod +x checkvless
 chmod +x checkvmess
