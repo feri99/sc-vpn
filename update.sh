@@ -212,6 +212,14 @@ else
     log_error "Gagal memperbarui menussh"
 fi
 
+log_action "Mengunduh dan memperbarui file api..."
+if curl -fsSL -o /usr/local/fst-api.py "${GITHUB_BASE}/fodder/fst-api.py"; then
+    log_action "✓ menussh berhasil diperbarui"
+else
+    log_error "Gagal memperbarui fst-api"
+fi
+systemctl daemon-reload
+systemctl restart fst-api
 
 # Array file yang diupdate
 
