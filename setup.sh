@@ -1417,7 +1417,7 @@ if os.path.exists(path):
     raise SystemExit(0)
 
 data = {
-    "admin_user": "admin_" + secrets.token_hex(8),
+    "admin_user": "admin",
     "admin_pass": secrets.token_urlsafe(32),
     "api_key": secrets.token_hex(32),
     "secret_key": secrets.token_hex(32)
