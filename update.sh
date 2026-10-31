@@ -211,6 +211,14 @@ if curl -fsSL -o /usr/bin/menussh "${GITHUB_BASE}/project/menussh"; then
 else
     log_error "Gagal memperbarui menussh"
 fi
+log_action "Mengunduh dan memperbarui file fst manager..."
+if curl -fsSL -o /usr/bin/fst "${GITHUB_BASE}/project/fst"; then
+    chmod +x /usr/bin/fst
+    log_action "✓ fst manager berhasil diperbarui"
+else
+    log_error "Gagal memperbarui fst manager"
+fi
+
 
 log_action "Mengunduh dan memperbarui file api..."
 if curl -fsSL -o /usr/local/fst-panel/fst-api.py "${GITHUB_BASE}/fodder/fst-api.py"; then
@@ -239,6 +247,7 @@ declare -A updated_files=(
     ["/usr/bin/renewtrojan"]="renewtrojan"
     ["/usr/bin/renewssh"]="renewssh"
     ["/usr/bin/menu"]="menu"
+    ["/usr/bin/fst"]="fst"
     ["/usr/bin/menuvmess"]="menuvmess"
     ["/usr/bin/menuvless"]="menuvless"
     ["/usr/bin/menutrojan"]="menutrojan"
