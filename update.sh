@@ -214,7 +214,7 @@ fi
 
 log_action "Mengunduh dan memperbarui file api..."
 if curl -fsSL -o /usr/local/fst-api.py "${GITHUB_BASE}/fodder/fst-api.py"; then
-    log_action "✓ menussh berhasil diperbarui"
+    log_action "✓ api berhasil diperbarui"
 else
     log_error "Gagal memperbarui fst-api"
 fi
