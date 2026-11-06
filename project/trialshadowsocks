@@ -78,7 +78,7 @@ send_telegram_notification() {
 <b>══════════════════════════</b>
 <b>� SS WS Link:</b> <code>$ss_link_ws</code>
 <b>� SS gRPC Link:</b> <code>$ss_link_grpc</code>
-<b>🔗 OpenClash Format:</b> <code>https://$domain:81/shadowsocks-$user.txt</code>
+<b>🔗 OpenClash Format:</b> <code>https://$domain/web/shadowsocks-$user.txt</code>
 <b>══════════════════════════</b>
 <b>🌟 FST Panel VPN 🌟</b>
 "
@@ -430,7 +430,7 @@ echo -e "SS WS Link  : ${ss_link_ws}"
 print_rainbow "══════════════════════════════════════════════════════════════════════"
 echo -e "SS gRPC Link: ${ss_link_grpc}"
 print_rainbow "══════════════════════════════════════════════════════════════════════"
-echo -e "OpenClash Format: https://${domain}:81/shadowsocks-$user.txt"
+echo -e "OpenClash Format: https://${domain}/web/shadowsocks-$user.txt"
 print_rainbow "══════════════════════════════════════════════════════════════════════"
 echo -e "Expires On  : $exp"
 echo -e ""

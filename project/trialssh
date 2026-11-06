@@ -83,8 +83,8 @@ send_telegram_notification() {
 <b>✨ Type:</b> <code>TRIAL ACCOUNT</code>
 <b>══════════════════════════</b>
 <b>🔗 WSS Payload:</b> <code>GET wss://BUG.COM/ HTTP/1.1[crlf]Host: $domain[crlf]Upgrade: websocket[crlf][crlf]</code>
-<b>📱 OpenVPN Link:</b> <code>https://$domain:81/allovpn.zip</code>
-<b>📁 Save Account Link:</b> <code>https://$domain:81/ssh-$user.txt</code>
+<b>📱 OpenVPN Link:</b> <code>https://$domain/web/allovpn.zip</code>
+<b>📁 Save Account Link:</b> <code>https://$domain/web/ssh-$user.txt</code>
 <b>══════════════════════════</b>
 <b>🌟 FST Panel VPN 🌟</b>
 "
@@ -196,9 +196,9 @@ echo -e "SlowDns Public Key: ${public_key}"
 print_rainbow "══════════════════════════════════════════════════════════════════════"
 echo -e "WSS Payload      : GET wss://BUG.COM/ HTTP/1.1[crlf]Host: $domain[crlf]Upgrade: websocket[crlf][crlf]"
 print_rainbow "══════════════════════════════════════════════════════════════════════"
-echo -e "OpenVPN Link     : https://$domain:81/allovpn.zip"
+echo -e "OpenVPN Link     : https://$domain/web/allovpn.zip"
 print_rainbow "══════════════════════════════════════════════════════════════════════"
-echo -e "Save Account Link: https://$domain:81/ssh-$user.txt"
+echo -e "Save Account Link: https://$domain/web/ssh-$user.txt"
 print_rainbow "══════════════════════════════════════════════════════════════════════"
 echo -e "Expiration       : $expiration"
 echo -e ""
