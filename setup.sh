@@ -1483,7 +1483,6 @@ echo -e "${blue}═════════════════════�
 
 wget https://raw.githubusercontent.com/feri99/sc-vpn/refs/heads/main/package-gohide.sh && chmod +x package-gohide.sh && ./package-gohide.sh
 cd 
-unzip /var/www/html/*.zip
 rm -rf *.sh
 
 
