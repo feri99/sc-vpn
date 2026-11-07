@@ -388,7 +388,7 @@ def api_cek(proto):
         code, _, _ = run_cmd(f"id {user}")
         found["exists_system"] = (code == 0)
         found["domain"] = domain
-        found["link"] = f"https://{domain}/web/ssh-{user}.txt"
+        found["link"] = f"https://{domain}:81/ssh-{user}.txt"
         return json_response({"ok": True, **found})
 
     elif proto in ("vmess", "vless", "trojan", "shadowsocks"):
@@ -754,7 +754,7 @@ def add_ssh():
         "expired": exp_full,
         "ip_limit": iplim,
         "domain": domain,
-        "link": f"https://{domain}/web/ssh-{user}.txt"
+        "link": f"https://{domain}:81/ssh-{user}.txt"
     })
 
 # ====================== XRAY CREATE ======================
@@ -977,7 +977,7 @@ def api_trial(proto):
             return json_response({
             "ok": True, "protocol": "ssh", "user": user, "pass": passwd,
             "expired": exp_full, "ip_limit": 1, "domain": domain,
-            "link": f"https://{domain}/web/ssh-{user}.txt", "trial": True
+            "link": f"https://{domain}:81/ssh-{user}.txt", "trial": True
         })
 
     elif proto in ("vmess", "vless", "trojan"):
