@@ -207,23 +207,21 @@ for name in links:
 if uncertain:
     detail = "; ".join(f"{n}: {','.join(ids)}" for n, ids in sorted(uncertain.items()))
     die("Selector Netplan tidak dapat diverifikasi; tidak aman menebak NIC SDN (" + detail + ").")
-if len(mapped) > 1:
-    die("Beberapa NIC non-publik sudah dipetakan Netplan dan tidak ada lease SDN live: " + ", ".join(sorted(mapped)))
-if len(mapped) == 1:
-    name = next(iter(mapped))
-    result(name, "stanza Netplan non-publik yang terpetakan unik; tanpa lease live, recovery tidak diizinkan")
-    raise SystemExit(0)
 
+# With no live SDN address/gateway, configured non-public interfaces are not
+# recovery candidates. This excludes utility networks and DHCPv6-only NICs.
 physical = []
 for name in links:
-    if name in ("lo", public_if): continue
+    if name in ("lo", public_if) or name in mapped: continue
     device = Path(sysfs_root) / "class" / "net" / name / "device"
     if device.exists() or device.is_symlink(): physical.append(name)
 if len(physical) != 1:
-    die("Interface SDN tidak teridentifikasi dari lease/stanza dan NIC fisik kosong tidak unik; kandidat fisik non-publik: " + (", ".join(sorted(physical)) if physical else "(tidak ada; sysfs tidak memberi bukti NIC fisik)"))
+    excluded = ", ".join(f"{name} (Netplan {nid})" for name, nid in sorted(mapped.items()))
+    detail = ", ".join(sorted(physical)) if physical else "(tidak ada; sysfs tidak memberi bukti NIC fisik)"
+    die("Interface SDN tidak teridentifikasi dari lease live; kandidat fisik non-publik yang belum dipetakan harus tepat satu, ditemukan: " + detail + ("; NIC terpetakan dikecualikan: " + excluded if excluded else ""))
 name = physical[0]
 if addresses.get(name) or routes_by_if.get(name):
-    die(f"Kandidat fisik {name} memiliki alamat atau rute IPv4 tetapi tidak cocok dengan CIDR SDN/stanza; recovery otomatis ditolak.")
+    die(f"Kandidat fisik {name} memiliki alamat atau rute IPv4 tetapi belum dipetakan Netplan dan tidak cocok dengan CIDR SDN; recovery otomatis ditolak.")
 result(name, "satu-satunya NIC fisik non-publik, tanpa IPv4/rute dan tanpa stanza Netplan")
 PY
 )" || fail "Deteksi interface SDN read-only gagal; tidak ada perubahan dibuat."
