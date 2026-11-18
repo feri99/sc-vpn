@@ -4,14 +4,17 @@
 # operations are performed.
 set -Eeuo pipefail
 
-VERSION="3.0"
+VERSION="3.1"
 SDN_IF=""
 SDN_MAC=""
 SDN_CIDR="192.168.10.0/24"
 PUBLIC_METRIC=200
 SDN_METRIC=50
+DHCP_PROBE_METRIC=60000
+DHCP_PROBE_TIMEOUT=60
+DHCP_PROBE_INTERVAL=2
 TABLE=1001
-SDN_ID="upcloud_sdn_auto"
+SDN_ID="upcloud_sdn"
 TARGET="/etc/netplan/99-upcloud-sdn-auto-routing.yaml"
 SCRIPT_PATH="$(readlink -f "$0")"
 
@@ -33,7 +36,10 @@ Optional SDN network override (default: $SDN_CIDR):
 The script automatically uses netplan apply after its read-only preflight. There
 is no confirmation prompt and no automatic rollback. SSH can still disconnect
 even if the route change is expected to be safe; use provider console/manual
-recovery if needed. A backup is saved for manual recovery, not auto-restoration.
+recovery if needed. During a DHCP probe, only the script's temporary Netplan
+overlay is removed and the previous configuration reapplied if probing fails.
+After final apply, there is no automatic rollback. A backup is saved for manual
+recovery.
 
 The script first looks for a unique live SDN lease/default route in the chosen
 CIDR. Recovery without a lease is allowed only when exactly one unused physical
@@ -57,7 +63,7 @@ while (($#)); do
 done
 
 [[ "$EUID" -eq 0 ]] || fail "Jalankan di VPS dengan sudo/root."
-for cmd in ip netplan python3 tar install cp mktemp date readlink ln mkdir rm chmod cat; do
+for cmd in ip netplan python3 tar install cp mktemp date readlink ln mkdir rm chmod cat stat mv sleep; do
   command -v "$cmd" >/dev/null 2>&1 || fail "Perintah '$cmd' diperlukan. Belum ada perubahan dibuat."
 done
 python3 -c 'import yaml' >/dev/null 2>&1 || fail "PyYAML diperlukan (paket Ubuntu: python3-yaml). Belum ada perubahan dibuat."
@@ -441,6 +447,16 @@ if len(defaults_by_if[pub_if]) != 1:
 pub_ip = pub_addresses[0]["ip"]
 pub_prefix = pub_addresses[0]["prefix"]
 pub_gw = next(iter(defaults_by_if[pub_if]))
+public_metrics = set()
+for route in route_data:
+    if route.get("dst") == "default" and route.get("dev") == pub_if:
+        gw = route.get("gateway") or route.get("via")
+        if gw == pub_gw:
+            try: public_metrics.add(int(route.get("metric", 0)))
+            except (TypeError, ValueError): pass
+if len(public_metrics) != 1:
+    die(f"Tidak bisa memastikan satu metrik default route publik pada {pub_if}; tidak aman menjalankan DHCP probe.")
+pub_metric = next(iter(public_metrics))
 public_mapping = map_netplan_id(pub_if)
 if not public_mapping:
     die(f"NIC publik {pub_if} tidak cocok dengan satu definisi Netplan yang dapat diverifikasi.")
@@ -479,7 +495,7 @@ for rule in rule_data:
 
 result = {
     "public_if": pub_if, "public_id": pub_id, "public_ip": pub_ip,
-    "public_prefix": pub_prefix, "public_gw": pub_gw,
+    "public_prefix": pub_prefix, "public_gw": pub_gw, "public_metric": pub_metric,
     "sdn_if": sdn_if, "sdn_mac": normalize_mac(confirmed_mac),
     "sdn_id": sdn_id, "sdn_new": sdn_new, "sdn_recovery": sdn_recovery,
     "sdn_cidr": str(sdn_net), "table": table, "priority": priority
@@ -501,6 +517,7 @@ PUB_ID="$(read_value public_id)"
 PUB_IP="$(read_value public_ip)"
 PUB_PREFIX="$(read_value public_prefix)"
 PUB_GW="$(read_value public_gw)"
+PUB_ORIGINAL_METRIC="$(read_value public_metric)"
 SDN_ID="$(read_value sdn_id)"
 SDN_NEW="$(read_value sdn_new)"
 SDN_RECOVERY="$(read_value sdn_recovery)"
@@ -523,35 +540,80 @@ if (( DRY_RUN )); then
   printf '\nDry-run: tidak meminta DHCP, tidak mengubah link, file, atau konfigurasi jaringan.\n'
   exit 0
 fi
-if [[ "$SDN_RECOVERY" == "1" ]] && ! command -v dhclient >/dev/null 2>&1; then
-  fail "Jalur otomatis memerlukan dhclient (paket Ubuntu: isc-dhcp-client) untuk meminta lease tanpa menulis konfigurasi persisten. Pasang paket itu lalu jalankan ulang; belum ada perubahan dibuat."
+if [[ "$SDN_RECOVERY" == "1" ]] && (( PUB_ORIGINAL_METRIC >= DHCP_PROBE_METRIC )); then
+  fail "Metrik default publik $PUB_ORIGINAL_METRIC tidak lebih kecil daripada metrik DHCP probe $DHCP_PROBE_METRIC; berhenti agar probe tidak mengambil alih egress publik."
 fi
 
 if [[ "$SDN_RECOVERY" == "1" ]]; then
-  DHCP_PLAN="Recovery DHCPv4 otomatis hanya dijalankan karena NIC ini satu-satunya kandidat fisik yang bersih; stanza exact-MAC dibuat setelah lease tervalidasi."
+  DHCP_PLAN="Lease diminta dengan Netplan sementara pada NIC unik $SDN_IF; metrik probe $DHCP_PROBE_METRIC menjaga gateway publik (metric $PUB_ORIGINAL_METRIC) tetap lebih diprioritaskan. Tidak membutuhkan dhclient."
 elif [[ "$SDN_NEW" == "1" ]]; then
   DHCP_PLAN="Lease SDN normal sudah valid; tidak ada recovery DHCP, stanza exact-MAC ditambahkan."
 else
-  DHCP_PLAN="Stanza exact-MAC yang ada dipakai ulang; tidak menjalankan klien DHCP kedua dan melanjutkan hanya dengan lease live yang valid."
+  DHCP_PLAN="Stanza exact-MAC yang ada dipakai ulang; tidak menjalankan probe tambahan dan melanjutkan hanya dengan lease live yang valid."
 fi
 printf '\nMode otomatis: preflight lulus; %s\n' "$DHCP_PLAN"
 printf 'PERINGATAN: skrip akan mengubah jaringan dan menjalankan netplan apply tanpa konfirmasi atau rollback otomatis. SSH masih bisa terputus; gunakan konsol provider/pemulihan manual bila perlu.\n'
-printf 'Jika DHCP/validasi/apply gagal, skrip tidak mengembalikan alamat/rute atau konfigurasi otomatis; cadangan Netplan hanya untuk pemulihan manual.\n'
+printf 'Jika probe DHCP gagal sebelum final overlay, skrip menghapus hanya file probe miliknya dan mencoba menerapkan ulang Netplan sebelumnya. Setelah final overlay/apply dimulai, tidak ada rollback otomatis; cadangan hanya untuk pemulihan manual.\n'
 
 RUNTIME_DIR=""
 TMP_YAML=""
+PROBE_YAML=""
 TARGET_TMP=""
 BACKUP=""
+PROBE_ID=""
+PROBE_ACTIVE=0
+LEASE_JSON=""
+
+ensure_backup() {
+  [[ -n "$BACKUP" ]] && return 0
+  local stamp
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  BACKUP="/root/netplan-backup-sdn-auto-${stamp}-$$.tar.gz"
+  if ! tar -czf "$BACKUP" -C / etc/netplan; then
+    BACKUP=""
+    return 1
+  fi
+  printf 'Cadangan Netplan dibuat: %s\n' "$BACKUP"
+}
+
+validate_overlay() {
+  local yaml_file="$1" stage_root="$2" dir
+  mkdir -p "$stage_root/etc" "$stage_root/lib" "$stage_root/run" || return 1
+  for dir in etc/netplan lib/netplan run/netplan; do
+    if [[ -d "/$dir" ]]; then
+      mkdir -p "$stage_root/$(dirname "$dir")" || return 1
+      cp -a "/$dir" "$stage_root/$(dirname "$dir")/" || return 1
+    fi
+  done
+  mkdir -p "$stage_root/etc/netplan" || return 1
+  cp "$yaml_file" "$stage_root/etc/netplan/$(basename "$TARGET")" || return 1
+  netplan generate --root-dir "$stage_root"
+}
+
+restore_probe() {
+  if [[ "$PROBE_ACTIVE" != "1" ]]; then return 0; fi
+  if [[ -f "$TARGET" && ! -L "$TARGET" ]] \
+    && [[ "$(stat -c '%d:%i' -- "$TARGET" 2>/dev/null || true)" == "$PROBE_ID" ]]; then
+    if rm -f -- "$TARGET"; then
+      PROBE_ACTIVE=0
+      printf 'Probe gagal sebelum final overlay; file probe milik skrip dihapus dan Netplan sebelumnya sedang diterapkan ulang.\n' >&2
+      if netplan generate && netplan apply; then
+        printf 'Konfigurasi Netplan sebelumnya berhasil diterapkan kembali.\n' >&2
+      else
+        printf 'PERINGATAN: penerapan ulang Netplan sebelumnya gagal; periksa melalui konsol VPS. Cadangan: %s\n' "${BACKUP:-tidak tersedia}" >&2
+      fi
+    else
+      printf 'PERINGATAN: file probe %s tidak dapat dihapus; tidak ada pemulihan otomatis yang aman.\n' "$TARGET" >&2
+    fi
+  else
+    printf 'PERINGATAN: %s bukan lagi file probe yang dibuat skrip; tidak disentuh.\n' "$TARGET" >&2
+  fi
+}
 
 on_exit() {
-  local rc=$? pid=""
+  local rc=$?
   trap - EXIT HUP INT TERM
-  if [[ -n "$RUNTIME_DIR" && -f "$RUNTIME_DIR/dhclient.pid" ]]; then
-    pid="$(cat "$RUNTIME_DIR/dhclient.pid" 2>/dev/null || true)"
-    if [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/comm" ]] && [[ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" == "dhclient" ]]; then
-      kill "$pid" 2>/dev/null || true
-    fi
-  fi
+  restore_probe
   [[ -z "$TARGET_TMP" ]] || rm -f "$TARGET_TMP" 2>/dev/null || true
   [[ -z "$RUNTIME_DIR" ]] || rm -rf "$RUNTIME_DIR" 2>/dev/null || true
   exit "$rc"
@@ -560,20 +622,52 @@ trap on_exit EXIT HUP INT TERM
 
 RUNTIME_DIR="$(mktemp -d /run/route-yes-no-sdn-auto.XXXXXX)" || fail "Tidak dapat membuat direktori runtime sementara."
 if [[ "$SDN_RECOVERY" == "1" ]]; then
-  ip link set dev "$SDN_IF" up || fail "Tidak dapat mengaktifkan $SDN_IF; konfigurasi persisten belum diubah."
-  printf '\nMeminta lease DHCPv4 satu kali pada %s; menunggu jawaban DHCP...\n' "$SDN_IF"
-  if ! dhclient -1 -v -pf "$RUNTIME_DIR/dhclient.pid" -lf "$RUNTIME_DIR/dhclient.leases" "$SDN_IF"; then
-    fail "Permintaan DHCPv4 gagal/tidak mendapat lease. Tidak ada konfigurasi persisten ditulis."
+  ensure_backup || fail "Tidak dapat membuat cadangan Netplan; probe DHCP tidak dijalankan."
+  PROBE_YAML="$RUNTIME_DIR/99-upcloud-sdn-auto-dhcp-probe.yaml"
+  cat >"$PROBE_YAML" <<EOF
+# Temporary DHCPv4 probe; this file is removed after lease validation.
+network:
+  version: 2
+  ethernets:
+    $SDN_ID:
+      match:
+        macaddress: "$SDN_MAC"
+      dhcp4: true
+      dhcp4-overrides:
+        route-metric: $DHCP_PROBE_METRIC
+EOF
+  PROBE_STAGE="$RUNTIME_DIR/netplan-probe-root"
+  validate_overlay "$PROBE_YAML" "$PROBE_STAGE" || fail "Netplan menolak konfigurasi DHCP probe terisolasi; tidak ada probe jaringan dijalankan."
+  TARGET_TMP="$(mktemp /etc/netplan/.99-upcloud-sdn-auto-probe.XXXXXX)" || fail "Tidak dapat menyiapkan file Netplan probe sementara."
+  install -o root -g root -m 600 "$PROBE_YAML" "$TARGET_TMP"
+  PROBE_ID="$(stat -c '%d:%i' -- "$TARGET_TMP")" || fail "Tidak dapat mencatat identitas file probe."
+  PROBE_ACTIVE=1
+  ln "$TARGET_TMP" "$TARGET" || fail "Tidak dapat memasang probe tanpa menimpa file Netplan yang sudah ada."
+  rm -f "$TARGET_TMP"
+  TARGET_TMP=""
+  printf '\nMeminta lease DHCPv4 lewat Netplan pada %s; gateway publik tetap diprioritaskan dengan metrik %s. Menunggu hingga %s detik...\n' "$SDN_IF" "$PUB_ORIGINAL_METRIC" "$DHCP_PROBE_TIMEOUT"
+  if ! netplan apply; then
+    fail "netplan apply untuk DHCP probe gagal; probe akan dibuang dan konfigurasi sebelumnya dicoba diterapkan kembali."
+  fi
+  LEASE_ERROR="$RUNTIME_DIR/lease-detect.err"
+  lease_attempts=$((DHCP_PROBE_TIMEOUT / DHCP_PROBE_INTERVAL))
+  for ((attempt=1; attempt<=lease_attempts; attempt++)); do
+    if LEASE_JSON="$(detect lease 2>"$LEASE_ERROR")"; then break; fi
+    LEASE_JSON=""
+    if (( attempt < lease_attempts )); then sleep "$DHCP_PROBE_INTERVAL"; fi
+  done
+  if [[ -z "$LEASE_JSON" ]]; then
+    [[ ! -s "$LEASE_ERROR" ]] || cat "$LEASE_ERROR" >&2
+    fail "Netplan tidak memberikan satu lease IPv4/gateway SDN tervalidasi dalam ${DHCP_PROBE_TIMEOUT} detik; probe akan dihapus dan konfigurasi sebelumnya dicoba diterapkan kembali."
   fi
 else
   if [[ "$SDN_NEW" == "1" ]]; then
-    printf '\nLease SDN sudah valid melalui jalur normal; menambah stanza Netplan exact-MAC tanpa recovery DHCP...\n'
+    printf '\nLease SDN normal sudah valid; menambah stanza exact-MAC tanpa DHCP probe tambahan...\n'
   else
     printf '\nMenggunakan lease DHCPv4 live pada stanza Netplan %s dan memvalidasinya ulang...\n' "$SDN_ID"
   fi
+  LEASE_JSON="$(detect lease)" || fail "Lease/preflight gagal; tidak ada overlay Netplan final yang ditulis."
 fi
-
-LEASE_JSON="$(detect lease)" || fail "Lease/preflight gagal. Tidak ada overlay Netplan yang ditulis; skrip tidak membatalkan state DHCP atau link secara otomatis."
 read_lease() { python3 - "$LEASE_JSON" "$1" <<'PY'
 import json, sys
 print(json.loads(sys.argv[1])[sys.argv[2]])
@@ -590,16 +684,10 @@ SDN_GW="$(read_lease sdn_gw)"
 SDN_ID="$(read_lease sdn_id)"
 SDN_NEW="$(read_lease sdn_new)"
 PRIORITY="$(read_lease priority)"
-
-# dhclient -1 normally exits after binding; if a client process remains, stop
-# only the one recorded in this run's private PID file before Netplan takes over.
-if [[ -f "$RUNTIME_DIR/dhclient.pid" ]]; then
-  PROBE_PID="$(cat "$RUNTIME_DIR/dhclient.pid" 2>/dev/null || true)"
-  if [[ "$PROBE_PID" =~ ^[0-9]+$ && -r "/proc/$PROBE_PID/comm" ]] \
-     && [[ "$(cat "/proc/$PROBE_PID/comm" 2>/dev/null || true)" == "dhclient" ]] \
-     && kill -0 "$PROBE_PID" 2>/dev/null; then
-    kill "$PROBE_PID" 2>/dev/null || fail "Tidak dapat menghentikan proses DHCP probe sebelum Netplan mengambil alih."
-  fi
+if [[ "$SDN_RECOVERY" == "1" ]]; then
+  # netplan get now sees our temporary probe stanza; it was not in the original
+  # configuration, so the final overlay must still include the detected MAC.
+  SDN_NEW=1
 fi
 
 printf '\nLease DHCP tervalidasi: %s %s/%s, gateway %s.\n' "$SDN_IF" "$SDN_IP" "$SDN_PREFIX" "$SDN_GW"
@@ -644,32 +732,29 @@ else
 EOF
 fi
 
-STAGE_ROOT="$RUNTIME_DIR/netplan-root"
-mkdir -p "$STAGE_ROOT/etc" "$STAGE_ROOT/lib" "$STAGE_ROOT/run"
-for dir in etc/netplan lib/netplan run/netplan; do
-  if [[ -d "/$dir" ]]; then
-    mkdir -p "$STAGE_ROOT/$(dirname "$dir")"
-    cp -a "/$dir" "$STAGE_ROOT/$(dirname "$dir")/"
-  fi
-done
-mkdir -p "$STAGE_ROOT/etc/netplan"
-cp "$TMP_YAML" "$STAGE_ROOT/etc/netplan/$(basename "$TARGET")"
-if ! netplan generate --root-dir "$STAGE_ROOT"; then
+STAGE_ROOT="$RUNTIME_DIR/netplan-final-root"
+if ! validate_overlay "$TMP_YAML" "$STAGE_ROOT"; then
   fail "Validasi konfigurasi Netplan gabungan gagal pada root sementara. Tidak ada file persisten ditulis."
 fi
-[[ ! -e "$TARGET" ]] || fail "$TARGET muncul sejak pra-pemeriksaan; menolak menimpanya. Tidak ada file persisten ditulis."
-
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-BACKUP="/root/netplan-backup-sdn-auto-${STAMP}-$$.tar.gz"
-tar -czf "$BACKUP" -C / etc/netplan || fail "Tidak dapat membuat arsip /etc/netplan; belum ada konfigurasi persisten ditulis."
-printf 'Cadangan Netplan dibuat: %s\n' "$BACKUP"
+ensure_backup || fail "Tidak dapat membuat cadangan Netplan; overlay final tidak dipasang."
 
 TARGET_TMP="$(mktemp /etc/netplan/.99-upcloud-sdn-auto-routing.XXXXXX)" || fail "Tidak dapat menyiapkan file Netplan sementara."
 install -o root -g root -m 600 "$TMP_YAML" "$TARGET_TMP"
-# ln is an atomic no-overwrite operation on the same filesystem.
-ln "$TARGET_TMP" "$TARGET" || fail "Tidak dapat memasang overlay tanpa menimpa file yang sudah ada."
-rm -f "$TARGET_TMP"
-TARGET_TMP=""
+if [[ "$PROBE_ACTIVE" == "1" ]]; then
+  [[ -f "$TARGET" && ! -L "$TARGET" ]] \
+    && [[ "$(stat -c '%d:%i' -- "$TARGET" 2>/dev/null || true)" == "$PROBE_ID" ]] \
+    || fail "File probe berubah sejak dipasang; menolak mengganti file yang bukan milik skrip."
+  mv -f -- "$TARGET_TMP" "$TARGET" || fail "Tidak dapat mengganti probe dengan overlay final."
+  TARGET_TMP=""
+  PROBE_ACTIVE=0
+  PROBE_ID=""
+else
+  [[ ! -e "$TARGET" ]] || fail "$TARGET muncul sejak pra-pemeriksaan; menolak menimpanya."
+  # Atomic no-overwrite for the normal lease path.
+  ln "$TARGET_TMP" "$TARGET" || fail "Tidak dapat memasang overlay tanpa menimpa file yang sudah ada."
+  rm -f "$TARGET_TMP"
+  TARGET_TMP=""
+fi
 
 printf '\nMenjalankan netplan apply langsung; tidak ada prompt Enter kedua atau rollback otomatis berbatas waktu.\n'
 if ! netplan apply; then
