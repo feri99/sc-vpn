@@ -1,85 +1,236 @@
 #!/usr/bin/env bash
-# Safely enable DHCPv4 on the user-confirmed SDN NIC and configure the existing
+# Safely identify the SDN NIC, enable DHCPv4 if needed, and configure routing.
 # public/SDN route preference and public-source reply policy. No cloud/API/GitHub
 # operations are performed.
 set -Eeuo pipefail
 
-VERSION="1.0"
-SDN_IF="eth3"
-SDN_MAC="c6:04:60:63:9d:b0"
+VERSION="3.0"
+SDN_IF=""
+SDN_MAC=""
 SDN_CIDR="192.168.10.0/24"
 PUBLIC_METRIC=200
 SDN_METRIC=50
 TABLE=1001
-ROLLBACK_SECONDS=120
-SDN_ID="upcloud_sdn_eth3"
-TARGET="/etc/netplan/99-upcloud-sdn-eth3-routing.yaml"
+SDN_ID="upcloud_sdn_auto"
+TARGET="/etc/netplan/99-upcloud-sdn-auto-routing.yaml"
 SCRIPT_PATH="$(readlink -f "$0")"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<EOF
-$0 v$VERSION — enable DHCPv4 on the confirmed SDN NIC and configure routing.
+$0 v$VERSION — detect the SDN NIC and safely configure DHCPv4/routing.
 
-Normal run (interactive; exactly one yes/no prompt before changes):
+Normal run (automatic after read-only preflight; no confirmation prompt):
   sudo bash $0
 
 Read-only checks only (does not request DHCP or alter networking):
   sudo bash $0 --dry-run
 
-After a successful apply, keep the change only if connectivity and routes look
-healthy by running the printed --commit command within $ROLLBACK_SECONDS seconds.
-Otherwise the script automatically removes its Netplan overlay and reapplies
-prior Netplan settings. This is a commit command, not another yes/no prompt.
+Optional SDN network override (default: $SDN_CIDR):
+  sudo bash $0 --sdn-cidr 10.20.0.0/24
 
-Fixed, verified target: $SDN_IF, MAC $SDN_MAC. The script does not scan for or
-substitute another interface/MAC, does not assume DHCP will provide a lease or
-gateway, and does not connect to a VPS, call a cloud API, or publish anything.
+The script automatically uses netplan apply after its read-only preflight. There
+is no confirmation prompt and no automatic rollback. SSH can still disconnect
+even if the route change is expected to be safe; use provider console/manual
+recovery if needed. A backup is saved for manual recovery, not auto-restoration.
+
+The script first looks for a unique live SDN lease/default route in the chosen
+CIDR. Recovery without a lease is allowed only when exactly one unused physical
+NIC remains besides the public NIC. It stops rather than guessing if evidence
+is missing or ambiguous. DHCP values are validated live; no VPS, cloud API, or
+GitHub is contacted.
 EOF
 }
 
-commit_rollback() {
-  local unit="${2:-}" marker lock
-  [[ "$#" -eq 2 && "$1" == "--commit" ]] || fail "Usage: $SCRIPT_PATH --commit <rollback-unit>"
-  [[ "$unit" =~ ^route-yes-no-sdn-eth3-[0-9]{8}T[0-9]{6}Z-[0-9]+$ ]] || fail "Invalid rollback unit name. Use the exact command printed by the successful run."
-  [[ "$EUID" -eq 0 ]] || fail "Run the commit command with sudo/root."
-  command -v flock >/dev/null 2>&1 || fail "flock is required to safely cancel the rollback."
-  command -v systemctl >/dev/null 2>&1 || fail "systemctl is required to cancel the rollback."
-  marker="/run/${unit}.committed"
-  lock="/run/${unit}.lock"
-  exec 9>"$lock"
-  flock -x 9
-  [[ -e "$TARGET" ]] || fail "The Netplan overlay is no longer present; it may already have rolled back."
-  # The rollback job uses the same lock and checks this marker before acting.
-  # This ordering safely handles the timer firing at the same moment as commit.
-  : >"$marker"
-  if systemctl stop "${unit}.timer"; then
-    printf 'Rollback canceled. The current Netplan configuration is kept.\n'
-  else
-    printf 'Commit marker written. The rollback job will see it and leave the configuration unchanged.\n' >&2
-  fi
-}
-
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then usage; exit 0; fi
-if [[ "${1:-}" == "--commit" ]]; then commit_rollback "$@"; exit 0; fi
 DRY_RUN=0
-if [[ "${1:-}" == "--dry-run" && "$#" -eq 1 ]]; then DRY_RUN=1
-elif [[ "$#" -gt 0 ]]; then fail "Unknown argument: $1 (use --help)."
-fi
+while (($#)); do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --sdn-cidr)
+      (($# >= 2)) || fail "--sdn-cidr memerlukan CIDR, mis. 10.20.0.0/24."
+      SDN_CIDR="$2"; shift 2 ;;
+    --sdn-cidr=*) SDN_CIDR="${1#*=}"; shift ;;
+    *) fail "Argumen tidak dikenal: $1 (gunakan --help)." ;;
+  esac
+done
 
 [[ "$EUID" -eq 0 ]] || fail "Jalankan di VPS dengan sudo/root."
-for cmd in ip netplan python3 systemd-run systemctl flock tar install cp mktemp date readlink ln mkdir rm chmod cat; do
+for cmd in ip netplan python3 tar install cp mktemp date readlink ln mkdir rm chmod cat; do
   command -v "$cmd" >/dev/null 2>&1 || fail "Perintah '$cmd' diperlukan. Belum ada perubahan dibuat."
 done
 python3 -c 'import yaml' >/dev/null 2>&1 || fail "PyYAML diperlukan (paket Ubuntu: python3-yaml). Belum ada perubahan dibuat."
 
-# Confirm temporary rollback support and staged Netplan validation before asking.
+# Confirm isolated Netplan validation support before asking.
 NETPLAN_HELP="$(netplan generate --help 2>&1 || true)"
 [[ "$NETPLAN_HELP" == *"--root-dir"* ]] || fail "Versi Netplan harus mendukung 'generate --root-dir' untuk memvalidasi konfigurasi sebelum menulis ke /etc/netplan. Belum ada perubahan dibuat."
-systemctl show-environment >/dev/null 2>&1 || fail "systemd manager tidak dapat diakses untuk memasang rollback 120 detik. Belum ada perubahan dibuat."
 [[ -d /etc/netplan && -w /etc/netplan && -w /root && -w /run ]] || fail "Direktori Netplan, /root, atau /run tidak dapat ditulis. Belum ada perubahan dibuat."
 [[ ! -e "$TARGET" ]] || fail "$TARGET sudah ada; skrip tidak akan menimpa konfigurasi yang ada. Belum ada perubahan dibuat."
+
+# Resolve the SDN interface from live lease/route evidence first. DHCP recovery
+# is considered only for one uniquely identifiable, unused physical NIC.
+DISCOVERY_JSON="$(python3 - "$SDN_CIDR" "${ROUTE_SDN_SYSFS_ROOT:-/sys}" <<'PY'
+import fnmatch, ipaddress, json, os, subprocess, sys
+from pathlib import Path
+
+cidr_s, sysfs_root = sys.argv[1:]
+
+def die(msg):
+    print("ERROR: " + msg, file=sys.stderr)
+    raise SystemExit(1)
+
+def run_json(args):
+    try:
+        p = subprocess.run(args, text=True, capture_output=True, check=True)
+        return json.loads(p.stdout or "[]")
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+        detail = getattr(e, "stderr", "") or str(e)
+        die("Tidak dapat membaca " + " ".join(args) + ": " + detail.strip())
+
+def norm_mac(value):
+    if not isinstance(value, str): return None
+    compact = value.strip().lower().replace(":", "").replace("-", "").replace(".", "")
+    if len(compact) != 12 or any(c not in "0123456789abcdef" for c in compact): return None
+    return ":".join(compact[i:i+2] for i in range(0, 12, 2))
+
+try:
+    net = ipaddress.ip_network(cidr_s, strict=True)
+except ValueError as e:
+    die("CIDR SDN tidak valid: " + str(e))
+if not isinstance(net, ipaddress.IPv4Network): die("CIDR SDN harus IPv4.")
+
+try:
+    import yaml
+    text = subprocess.run(["netplan", "get"], text=True, capture_output=True, check=True).stdout
+    effective = yaml.safe_load(text) or {}
+except Exception as e:
+    die("Tidak dapat membaca konfigurasi Netplan efektif: " + str(e))
+network = effective.get("network", effective) if isinstance(effective, dict) else {}
+ethernets = network.get("ethernets") or {}
+if not isinstance(ethernets, dict): die("Definisi ethernet Netplan tidak dapat diverifikasi.")
+
+links_data = run_json(["ip", "-j", "link", "show"])
+addr_data = run_json(["ip", "-j", "-4", "addr", "show"])
+routes = run_json(["ip", "-j", "-4", "route", "show"])
+links = {x.get("ifname"): x for x in links_data if x.get("ifname")}
+if not links: die("Tidak ada interface jaringan yang dapat dibaca dari ip link.")
+addresses = {name: [] for name in links}
+for item in addr_data:
+    name = item.get("ifname")
+    for info in item.get("addr_info", []):
+        if info.get("family") == "inet":
+            try: addresses.setdefault(name, []).append(ipaddress.IPv4Address(info["local"]))
+            except (KeyError, ValueError, TypeError): pass
+routes_by_if = {}
+for route in routes:
+    dev = route.get("dev")
+    if dev: routes_by_if.setdefault(dev, []).append(route)
+
+# Strongest signal: a live address in the SDN CIDR or a default route whose
+# gateway is in that CIDR. A partial match is selected for validation, never
+# silently reclassified as a clean recovery candidate.
+live_marks = {}
+for name in links:
+    if name == "lo": continue
+    if any(a in net for a in addresses.get(name, [])):
+        live_marks.setdefault(name, set()).add("alamat")
+for route in routes:
+    dev = route.get("dev")
+    gw = route.get("gateway") or route.get("via")
+    if dev in links and route.get("dst") == "default" and gw:
+        try:
+            if ipaddress.IPv4Address(gw) in net:
+                live_marks.setdefault(dev, set()).add("gateway")
+        except ValueError: pass
+if len(live_marks) > 1:
+    die("Bukti SDN live ambigu pada beberapa interface: " + ", ".join(sorted(live_marks)))
+
+def result(name, basis):
+    mac = norm_mac(links.get(name, {}).get("address"))
+    if not mac: die(f"MAC live untuk {name} tidak valid; tidak aman melanjutkan.")
+    print(json.dumps({"ifname": name, "mac": mac, "basis": basis}))
+
+if live_marks:
+    name = next(iter(live_marks))
+    result(name, "bukti lease/alamat atau gateway live dalam CIDR SDN")
+    raise SystemExit(0)
+
+# No live SDN evidence: determine the public NIC using its global IPv4 and
+# default gateway, then use exact Netplan selectors to recognize configured NICs.
+defaults = {}
+for route in routes:
+    if route.get("dst") != "default": continue
+    dev, gw = route.get("dev"), route.get("gateway") or route.get("via")
+    if dev and gw:
+        try: defaults.setdefault(dev, set()).add(str(ipaddress.IPv4Address(gw)))
+        except ValueError: pass
+public = sorted(name for name, vals in addresses.items()
+                if any(a.is_global for a in vals) and defaults.get(name))
+if len(public) != 1:
+    die("Tanpa lease SDN, tidak bisa menentukan satu NIC publik; kandidat: " + (", ".join(public) if public else "(tidak ada)"))
+public_if = public[0]
+
+def map_netplan(name):
+    matches, uncertain = [], []
+    live_mac = norm_mac(links.get(name, {}).get("address"))
+    for nid, cfg in ethernets.items():
+        if not isinstance(cfg, dict):
+            uncertain.append(nid); continue
+        selector = cfg.get("match") or {}
+        if not isinstance(selector, dict) or any(k not in ("name", "macaddress") for k in selector):
+            uncertain.append(nid); continue
+        matched = True
+        if "name" in selector:
+            patterns = selector["name"]
+            if isinstance(patterns, str): patterns = [patterns]
+            if not isinstance(patterns, list) or not patterns or any(not isinstance(p, str) for p in patterns):
+                uncertain.append(nid); continue
+            matched = any(fnmatch.fnmatchcase(name, p) for p in patterns)
+        if "macaddress" in selector:
+            expected = norm_mac(selector.get("macaddress"))
+            if not expected:
+                uncertain.append(nid); continue
+            matched = matched and bool(live_mac and expected == live_mac)
+        if not selector: matched = (nid == name or cfg.get("set-name") == name)
+        if matched: matches.append(nid)
+    if len(matches) > 1: die(f"{name} cocok dengan beberapa stanza Netplan: " + ", ".join(matches))
+    if uncertain: return None, uncertain
+    return (matches[0] if matches else None), []
+
+mapped, uncertain = {}, {}
+for name in links:
+    if name in ("lo", public_if): continue
+    nid, unknown = map_netplan(name)
+    if unknown: uncertain[name] = unknown
+    elif nid: mapped[name] = nid
+if uncertain:
+    detail = "; ".join(f"{n}: {','.join(ids)}" for n, ids in sorted(uncertain.items()))
+    die("Selector Netplan tidak dapat diverifikasi; tidak aman menebak NIC SDN (" + detail + ").")
+if len(mapped) > 1:
+    die("Beberapa NIC non-publik sudah dipetakan Netplan dan tidak ada lease SDN live: " + ", ".join(sorted(mapped)))
+if len(mapped) == 1:
+    name = next(iter(mapped))
+    result(name, "stanza Netplan non-publik yang terpetakan unik; tanpa lease live, recovery tidak diizinkan")
+    raise SystemExit(0)
+
+physical = []
+for name in links:
+    if name in ("lo", public_if): continue
+    device = Path(sysfs_root) / "class" / "net" / name / "device"
+    if device.exists() or device.is_symlink(): physical.append(name)
+if len(physical) != 1:
+    die("Interface SDN tidak teridentifikasi dari lease/stanza dan NIC fisik kosong tidak unik; kandidat fisik non-publik: " + (", ".join(sorted(physical)) if physical else "(tidak ada; sysfs tidak memberi bukti NIC fisik)"))
+name = physical[0]
+if addresses.get(name) or routes_by_if.get(name):
+    die(f"Kandidat fisik {name} memiliki alamat atau rute IPv4 tetapi tidak cocok dengan CIDR SDN/stanza; recovery otomatis ditolak.")
+result(name, "satu-satunya NIC fisik non-publik, tanpa IPv4/rute dan tanpa stanza Netplan")
+PY
+)" || fail "Deteksi interface SDN read-only gagal; tidak ada perubahan dibuat."
+SDN_IF="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ifname"])' "$DISCOVERY_JSON")"
+SDN_MAC="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["mac"])' "$DISCOVERY_JSON")"
+SDN_BASIS="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["basis"])' "$DISCOVERY_JSON")"
+printf 'Deteksi SDN baca-saja: %s (%s); dasar: %s.\n' "$SDN_IF" "$SDN_MAC" "$SDN_BASIS"
 
 # Read-only detection. The same checks are repeated after DHCP succeeds, so
 # dynamic values and any route/rule changes are validated before persistent writes.
@@ -142,11 +293,10 @@ sdn_routes = run_json(["ip", "-j", "-4", "route", "show", "dev", sdn_if])
 
 links = {item.get("ifname"): item for item in link_data if item.get("ifname")}
 if sdn_if not in links:
-    die(f"Interface terkonfirmasi {sdn_if} tidak ditemukan; tidak mencari interface pengganti.")
+    die(f"Interface yang terdeteksi otomatis, {sdn_if}, tidak ditemukan; tidak mencari pengganti.")
 actual_mac = normalize_mac(links[sdn_if].get("address"))
 if actual_mac != normalize_mac(confirmed_mac):
-    die(f"MAC {sdn_if} tidak cocok dengan nilai terkonfirmasi {confirmed_mac}; tidak ada perubahan dibuat.")
-sdn_was_up = int("UP" in (links[sdn_if].get("flags") or []))
+    die(f"MAC live {sdn_if} berubah dari hasil deteksi {confirmed_mac}; tidak ada perubahan dibuat.")
 
 addresses = {}
 for item in addr_data:
@@ -333,7 +483,7 @@ result = {
     "public_if": pub_if, "public_id": pub_id, "public_ip": pub_ip,
     "public_prefix": pub_prefix, "public_gw": pub_gw,
     "sdn_if": sdn_if, "sdn_mac": normalize_mac(confirmed_mac),
-    "sdn_was_up": sdn_was_up, "sdn_id": sdn_id, "sdn_new": sdn_new, "sdn_recovery": sdn_recovery,
+    "sdn_id": sdn_id, "sdn_new": sdn_new, "sdn_recovery": sdn_recovery,
     "sdn_cidr": str(sdn_net), "table": table, "priority": priority
 }
 if mode == "lease":
@@ -353,7 +503,6 @@ PUB_ID="$(read_value public_id)"
 PUB_IP="$(read_value public_ip)"
 PUB_PREFIX="$(read_value public_prefix)"
 PUB_GW="$(read_value public_gw)"
-SDN_WAS_UP="$(read_value sdn_was_up)"
 SDN_ID="$(read_value sdn_id)"
 SDN_NEW="$(read_value sdn_new)"
 SDN_RECOVERY="$(read_value sdn_recovery)"
@@ -363,7 +512,7 @@ printf 'Pra-pemeriksaan read-only lulus.\n'
 printf '  Publik: %s (%s/%s), gateway teramati %s\n' "$PUB_IF" "$PUB_IP" "$PUB_PREFIX" "$PUB_GW"
 if [[ "$SDN_NEW" == "1" ]]; then
   if [[ "$SDN_RECOVERY" == "1" ]]; then
-    printf '  SDN:    deteksi normal gagal karena stanza/alamat/rute belum ada; recovery terbatas ke %s / %s.\n' "$SDN_IF" "$SDN_MAC"
+    printf '  SDN:    tidak ada stanza/alamat/rute; recovery terbatas ke NIC unik %s / %s.\n' "$SDN_IF" "$SDN_MAC"
   else
     printf '  SDN:    lease normal sudah valid; stanza exact-MAC akan ditambahkan seperti jalur normal, tanpa recovery DHCP.\n'
   fi
@@ -380,91 +529,29 @@ if [[ "$SDN_RECOVERY" == "1" ]] && ! command -v dhclient >/dev/null 2>&1; then
   fail "Jalur otomatis memerlukan dhclient (paket Ubuntu: isc-dhcp-client) untuk meminta lease tanpa menulis konfigurasi persisten. Pasang paket itu lalu jalankan ulang; belum ada perubahan dibuat."
 fi
 
-[[ -t 0 && -t 1 ]] || fail "Terminal interaktif diperlukan untuk satu konfirmasi yes/no. Jalankan --dry-run untuk pemeriksaan baca-saja."
 if [[ "$SDN_RECOVERY" == "1" ]]; then
-  DHCP_PLAN="Hanya karena deteksi normal gagal dan eth3 bersih tanpa stanza/alamat/rute, setelah yes skrip akan meminta lease DHCPv4 lalu membuat stanza exact-MAC setelah lease tervalidasi."
+  DHCP_PLAN="Recovery DHCPv4 otomatis hanya dijalankan karena NIC ini satu-satunya kandidat fisik yang bersih; stanza exact-MAC dibuat setelah lease tervalidasi."
 elif [[ "$SDN_NEW" == "1" ]]; then
-  DHCP_PLAN="Deteksi normal sudah menemukan lease SDN valid; recovery DHCP tidak dijalankan, dan stanza exact-MAC ditambahkan seperti jalur normal."
+  DHCP_PLAN="Lease SDN normal sudah valid; tidak ada recovery DHCP, stanza exact-MAC ditambahkan."
 else
-  DHCP_PLAN="Stanza exact-MAC yang sudah ada akan dipakai ulang; skrip tidak menjalankan klien DHCP kedua dan hanya melanjutkan bila lease live masih valid."
+  DHCP_PLAN="Stanza exact-MAC yang ada dipakai ulang; tidak menjalankan klien DHCP kedua dan melanjutkan hanya dengan lease live yang valid."
 fi
-cat <<EOF
-
-Konfirmasi tunggal sebelum perubahan:
-Jika menjawab yes, skrip memastikan DHCPv4 hanya pada $SDN_IF (MAC $SDN_MAC).
-$DHCP_PLAN Skrip lalu memeriksa alamat/gateway yang benar-benar diberikan dan
-menerapkan rute yang mengutamakan egress SDN serta mempertahankan
-balasan koneksi masuk melalui NIC publik. Nilai gateway tidak ditebak. Jika lease
-atau validasi gagal, konfigurasi persisten dipulihkan/tetap tidak berubah. Timer
-rollback $ROLLBACK_SECONDS detik dipasang tepat sebelum apply, sehingga waktu
-apply memakai sebagian jendelanya; jalankan perintah --commit yang ditampilkan
-untuk mempertahankan perubahan. Perubahan rute dapat memutus sesi
-SSH; gunakan akses konsol/recovery bila tersedia.
-
-Lanjutkan? (yes/no): 
-EOF
-IFS= read -r RESPONSE || fail "Tidak dapat membaca jawaban; belum ada perubahan dibuat."
-case "$RESPONSE" in
-  yes) printf 'Persetujuan diterima; menjalankan DHCP, validasi, dan penerapan dalam proses ini.\n' ;;
-  no) printf 'Dibatalkan; tidak ada file atau pengaturan jaringan yang diubah.\n'; exit 0 ;;
-  *) fail "Jawab tepat yes atau no; tidak ada perubahan dibuat." ;;
-esac
+printf '\nMode otomatis: preflight lulus; %s\n' "$DHCP_PLAN"
+printf 'PERINGATAN: skrip akan mengubah jaringan dan menjalankan netplan apply tanpa konfirmasi atau rollback otomatis. SSH masih bisa terputus; gunakan konsol provider/pemulihan manual bila perlu.\n'
+printf 'Jika DHCP/validasi/apply gagal, skrip tidak mengembalikan alamat/rute atau konfigurasi otomatis; cadangan Netplan hanya untuk pemulihan manual.\n'
 
 RUNTIME_DIR=""
 TMP_YAML=""
 TARGET_TMP=""
 BACKUP=""
-LEASE_STARTED=0
-RECOVERY_USED=0
-if [[ "$SDN_RECOVERY" == "1" ]]; then RECOVERY_USED=1; fi
-CONFIG_INSTALLED=0
-ROLLBACK_ARMED=0
-SUCCESS=0
-KEEP_SDN=0
-ROLLBACK_UNIT=""
-ROLLBACK_SCRIPT=""
-ROLLBACK_MARKER=""
-ROLLBACK_LOCK=""
 
-restore_temporary_network() {
-  local pid=""
+on_exit() {
+  local rc=$? pid=""
+  trap - EXIT HUP INT TERM
   if [[ -n "$RUNTIME_DIR" && -f "$RUNTIME_DIR/dhclient.pid" ]]; then
     pid="$(cat "$RUNTIME_DIR/dhclient.pid" 2>/dev/null || true)"
     if [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/comm" ]] && [[ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" == "dhclient" ]]; then
       kill "$pid" 2>/dev/null || true
-    fi
-  fi
-  # Static preflight required that eth3 had no IPv4 address or route, so these
-  # flushes remove only temporary DHCP state created by this run.
-  ip -4 addr flush dev "$SDN_IF" scope global >/dev/null 2>&1 || true
-  ip -4 route flush dev "$SDN_IF" >/dev/null 2>&1 || true
-  if [[ "$SDN_WAS_UP" == "0" ]]; then ip link set dev "$SDN_IF" down >/dev/null 2>&1 || true; fi
-}
-
-on_exit() {
-  local rc=$?
-  trap - EXIT HUP INT TERM
-  if [[ "$SUCCESS" != "1" ]]; then
-    if [[ "$ROLLBACK_ARMED" == "1" ]]; then
-      exec 8>"$ROLLBACK_LOCK"
-      flock -x 8 || true
-      : >"$ROLLBACK_MARKER" 2>/dev/null || true
-      systemctl stop "${ROLLBACK_UNIT}.timer" >/dev/null 2>&1 || true
-    fi
-    if [[ "$CONFIG_INSTALLED" == "1" && -e "$TARGET" ]]; then
-      printf '\nPenerapan tidak selesai; menghapus overlay dan mencoba menerapkan kembali konfigurasi Netplan sebelumnya.\n' >&2
-      rm -f "$TARGET" "$TARGET_TMP" 2>/dev/null || true
-      if ! netplan generate || ! netplan apply; then
-        printf 'PERINGATAN: pemulihan otomatis Netplan gagal. Arsip cadangan: %s\n' "${BACKUP:-tidak tersedia}" >&2
-        printf 'Periksa konsol VPS; overlay yang dibuat skrip berada di %s.\n' "$TARGET" >&2
-      else
-        printf 'Konfigurasi Netplan sebelumnya diterapkan kembali. Arsip: %s\n' "${BACKUP:-tidak tersedia}" >&2
-      fi
-    fi
-    if [[ "$LEASE_STARTED" == "1" && "$KEEP_SDN" != "1" ]]; then
-      restore_temporary_network
-      printf 'Keadaan IPv4 sementara pada %s dibersihkan; jika NIC semula DOWN, skrip mengembalikannya ke DOWN.\n' "$SDN_IF" >&2
-      printf 'Jika perlu memulihkan manual (hanya setelah memastikan NIC ini tetap tidak dipakai konfigurasi lain): sudo ip -4 addr flush dev %s scope global; sudo ip -4 route flush dev %s; sudo ip link set dev %s down\n' "$SDN_IF" "$SDN_IF" "$SDN_IF" >&2
     fi
   fi
   [[ -z "$TARGET_TMP" ]] || rm -f "$TARGET_TMP" 2>/dev/null || true
@@ -473,9 +560,8 @@ on_exit() {
 }
 trap on_exit EXIT HUP INT TERM
 
-RUNTIME_DIR="$(mktemp -d /run/route-yes-no-sdn-eth3.XXXXXX)" || fail "Tidak dapat membuat direktori runtime sementara."
+RUNTIME_DIR="$(mktemp -d /run/route-yes-no-sdn-auto.XXXXXX)" || fail "Tidak dapat membuat direktori runtime sementara."
 if [[ "$SDN_RECOVERY" == "1" ]]; then
-  LEASE_STARTED=1
   ip link set dev "$SDN_IF" up || fail "Tidak dapat mengaktifkan $SDN_IF; konfigurasi persisten belum diubah."
   printf '\nMeminta lease DHCPv4 satu kali pada %s; menunggu jawaban DHCP...\n' "$SDN_IF"
   if ! dhclient -1 -v -pf "$RUNTIME_DIR/dhclient.pid" -lf "$RUNTIME_DIR/dhclient.leases" "$SDN_IF"; then
@@ -489,7 +575,7 @@ else
   fi
 fi
 
-LEASE_JSON="$(detect lease)" || fail "Lease/preflight gagal. Tidak ada konfigurasi persisten ditulis; skrip akan membersihkan state DHCP sementara dan memulihkan keadaan link awal."
+LEASE_JSON="$(detect lease)" || fail "Lease/preflight gagal. Tidak ada overlay Netplan yang ditulis; skrip tidak membatalkan state DHCP atau link secara otomatis."
 read_lease() { python3 - "$LEASE_JSON" "$1" <<'PY'
 import json, sys
 print(json.loads(sys.argv[1])[sys.argv[2]])
@@ -523,9 +609,9 @@ printf 'Perilaku rute publik/SDN akan diterapkan sesuai nilai live tersebut; tid
 
 # Prepare the final YAML only in /run, and validate the merged configuration in
 # an isolated root before touching /etc/netplan.
-TMP_YAML="$RUNTIME_DIR/99-upcloud-sdn-eth3-routing.yaml"
+TMP_YAML="$RUNTIME_DIR/99-upcloud-sdn-auto-routing.yaml"
 cat >"$TMP_YAML" <<EOF
-# Added by $0 after explicit confirmation; DHCP addresses/gateway are not fixed.
+# Added by $0 after read-only preflight; DHCP addresses/gateway are not fixed.
 network:
   version: 2
   ethernets:
@@ -575,74 +661,21 @@ if ! netplan generate --root-dir "$STAGE_ROOT"; then
 fi
 [[ ! -e "$TARGET" ]] || fail "$TARGET muncul sejak pra-pemeriksaan; menolak menimpanya. Tidak ada file persisten ditulis."
 
-# Exercise the exact transient timer mechanism before any persistent Netplan
-# write. If this fails, the trap only removes the temporary DHCP state.
-PREFLIGHT_UNIT="route-sdn-eth3-preflight-$$-$RANDOM"
-if ! systemd-run --unit="$PREFLIGHT_UNIT" --on-active="${ROLLBACK_SECONDS}s" --timer-property=AccuracySec=1s --collect /bin/true; then
-  fail "Uji timer rollback systemd gagal; tidak ada file persisten ditulis."
-fi
-if ! systemctl stop "${PREFLIGHT_UNIT}.timer"; then
-  fail "Tidak dapat menghentikan timer uji; tidak ada file persisten ditulis."
-fi
-
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-BACKUP="/root/netplan-backup-sdn-eth3-${STAMP}-$$.tar.gz"
+BACKUP="/root/netplan-backup-sdn-auto-${STAMP}-$$.tar.gz"
 tar -czf "$BACKUP" -C / etc/netplan || fail "Tidak dapat membuat arsip /etc/netplan; belum ada konfigurasi persisten ditulis."
 printf 'Cadangan Netplan dibuat: %s\n' "$BACKUP"
 
-TARGET_TMP="$(mktemp /etc/netplan/.99-upcloud-sdn-eth3-routing.XXXXXX)" || fail "Tidak dapat menyiapkan file Netplan sementara."
+TARGET_TMP="$(mktemp /etc/netplan/.99-upcloud-sdn-auto-routing.XXXXXX)" || fail "Tidak dapat menyiapkan file Netplan sementara."
 install -o root -g root -m 600 "$TMP_YAML" "$TARGET_TMP"
 # ln is an atomic no-overwrite operation on the same filesystem.
 ln "$TARGET_TMP" "$TARGET" || fail "Tidak dapat memasang overlay tanpa menimpa file yang sudah ada."
-CONFIG_INSTALLED=1
 rm -f "$TARGET_TMP"
 TARGET_TMP=""
 
-ROLLBACK_UNIT="route-yes-no-sdn-eth3-${STAMP}-$$"
-ROLLBACK_SCRIPT="/run/${ROLLBACK_UNIT}.sh"
-ROLLBACK_MARKER="/run/${ROLLBACK_UNIT}.committed"
-ROLLBACK_LOCK="/run/${ROLLBACK_UNIT}.lock"
-cat >"$ROLLBACK_SCRIPT" <<EOF
-#!/usr/bin/env bash
-set -u
-ROLLBACK_STATUS=0
-exec 9>"$ROLLBACK_LOCK"
-flock -x 9
-if [[ -e "$ROLLBACK_MARKER" ]]; then
-  exit 0
-fi
-printf 'SDN routing rollback timer fired at %s; restoring prior Netplan source.\\n' "\$(date -u +%FT%TZ)"
-if [[ -e "$TARGET" ]]; then
-  rm -f "$TARGET"
-  if netplan generate && netplan apply; then
-    printf 'Automatic rollback completed; previous Netplan configuration was reapplied.\\n'
-  else
-    printf 'Automatic rollback ERROR: previous Netplan apply failed; inspect VPS console.\\n' >&2
-    ROLLBACK_STATUS=1
-  fi
-fi
-if [[ "$RECOVERY_USED" == "1" ]]; then
-  ip -4 addr flush dev "$SDN_IF" scope global >/dev/null 2>&1 || true
-  ip -4 route flush dev "$SDN_IF" >/dev/null 2>&1 || true
-  if [[ "$SDN_WAS_UP" == "0" ]]; then
-    ip link set dev "$SDN_IF" down >/dev/null 2>&1 || true
-  fi
-fi
-exit "\$ROLLBACK_STATUS"
-EOF
-chmod 700 "$ROLLBACK_SCRIPT"
-if ! systemd-run --unit="$ROLLBACK_UNIT" --on-active="${ROLLBACK_SECONDS}s" --timer-property=AccuracySec=1s --collect /bin/bash "$ROLLBACK_SCRIPT"; then
-  fail "Tidak dapat memasang rollback systemd ${ROLLBACK_SECONDS} detik; overlay akan dipulihkan sebelum keluar."
-fi
-ROLLBACK_ARMED=1
-
-printf '\nMengaplikasikan konfigurasi Netplan tervalidasi. Jika koneksi berubah, rollback otomatis aktif selama %s detik.\n' "$ROLLBACK_SECONDS"
+printf '\nMenjalankan netplan apply langsung; tidak ada prompt Enter kedua atau rollback otomatis berbatas waktu.\n'
 if ! netplan apply; then
-  fail "netplan apply gagal; skrip akan mencoba memulihkan konfigurasi sebelumnya."
+  fail "netplan apply gagal; tidak ada rollback otomatis. Overlay tersimpan di $TARGET dan cadangan tersedia di $BACKUP; periksa jaringan melalui konsol provider."
 fi
-SUCCESS=1
-KEEP_SDN=1
-printf '\nPenerapan selesai. Periksa konektivitas, rute, dan akses publik sekarang.\n'
-printf 'Timer %s detik dimulai tepat sebelum apply (waktu apply mengurangi sisa jendela). Jika semuanya benar dan ingin mempertahankan perubahan, jalankan segera:\n  sudo bash %q --commit %q\n' "$ROLLBACK_SECONDS" "$SCRIPT_PATH" "$ROLLBACK_UNIT"
-printf 'Jika perintah commit tidak dijalankan sebelum timer habis, timer akan menghapus overlay dan menerapkan kembali konfigurasi Netplan sebelumnya.\n'
+printf '\nKonfigurasi berhasil diterapkan tanpa rollback otomatis. Verifikasi konektivitas, rute, dan akses publik dari sesi atau konsol provider.\n'
 printf 'Arsip konfigurasi sebelumnya: %s\n' "$BACKUP"
