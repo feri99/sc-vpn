@@ -308,6 +308,10 @@ display_menu
             features
             display_menu
             ;;
+        9 | 09) 
+            echo -e "${cyan}update${neutral}"
+            bash <(curl -fsSL https://raw.githubusercontent.com/feri99/sc-vpn/main/update.sh)
+            ;;
         x | X)
             echo -e ""
             echo -e "${green}╔═══════════════════════════════════════════════════════════════════════╗${neutral}"
