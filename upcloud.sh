@@ -1402,6 +1402,7 @@ else
     echo -e "${red}Gagal download fst-api.py dari GitHub${neutral}"
 fi
 
+apt install python3-waitress -y
 sudo mkdir -p /etc/fst-api
 sudo chmod 700 /etc/fst-api
 
