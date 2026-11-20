@@ -341,14 +341,18 @@ def list_xray_users(protocol):
 def api_list(proto):
     if not require_auth():
         return json_response({"ok": False, "msg": "Unauthorized"}, 401)
+
     proto = proto.lower()
+
     if proto == "ssh":
         data = list_ssh_users()
     elif proto in ("vmess", "vless", "trojan", "shadowsocks"):
         data = list_xray_users(proto)
     else:
         return json_response({"ok": False, "msg": "Protocol tidak dikenal"}, 400)
+
     return json_response({"ok": True, "protocol": proto, "count": len(data), "users": data})
+
 
 @app.route(PREFIX + "/api/list", method=["GET", "POST"])
 def api_list_all():
@@ -741,8 +745,83 @@ def add_ssh():
         f.write(f"### {user} {exp_full}\n")
 
     domain = get_domain()
-    info = f"Username : {user}\nPassword : {passwd}\nHost     : {domain}\nExpired  : {exp_full}\n"
+
+    # Informasi server
+    _, ip, _ = run_cmd([
+        "curl", "-4", "-fsS", "--max-time", "3",
+        "https://ipv4.icanhazip.com"
+    ])
+    ip = ip.strip() or "Unknown"
+    
+    try:
+        with open("/etc/xray/city") as f:
+            city = f.read().strip()
+    except:
+        city = "Unknown"
+    
+    try:
+        with open("/etc/slowdns/server.pub") as f:
+            pubkey = f.read().strip()
+    except:
+        pubkey = "Not Available"
+    
+    # Detail akun SSH
+    details = {
+        "username": user,
+        "password": passwd,
+        "ip": ip,
+        "host": domain,
+        "location": city,
+        "openssh": "443, 80, 22",
+        "udpssh": "1-65535",
+        "dropbear": "443, 109",
+        "dropbear_ws": "443, 109",
+        "ssh_ws": "80",
+        "ssh_ssl_ws": "443",
+        "ssl_tls": "443",
+        "ovpn_ssl": "443",
+        "ovpn_tcp": "1194",
+        "ovpn_udp": "2200",
+        "badvpn": "7100, 7200, 7300",
+        "wss_payload": (
+            f"GET wss://BUG.COM/ HTTP/1.1[crlf]"
+            f"Host: {domain}[crlf]"
+            "Upgrade: websocket[crlf][crlf]"
+        ),
+        "expired": exp_full,
+        "link": f"https://{domain}/web/ssh-{user}.txt"
+    }
+    
+    # Buat file informasi akun
+    info = f"""════════════════════════════════════════════
+SSH OVPN Account Details
+════════════════════════════════════════════
+Username         : {user}
+Password         : {passwd}
+════════════════════════════════════════════
+IP               : {ip}
+Host             : {domain}
+Location         : {city}
+OpenSSH Port     : 443, 80, 22
+UdpSSH Port      : 1-65535
+Dropbear Port    : 443, 109
+Dropbear WS Port : 443, 109
+SSH WS Port      : 80
+SSH SSL WS Port  : 443
+SSL/TLS Port     : 443
+OVPN SSL Port    : 443
+OVPN TCP Port    : 1194
+OVPN UDP Port    : 2200
+BadVPN UDP       : 7100, ,7200, 7300
+════════════════════════════════════════════
+WSS Payload:
+{details["wss_payload"]}
+════════════════════════════════════════════
+Expiration       : {exp_full}
+"""
+    
     os.makedirs("/var/www/html", exist_ok=True)
+    
     with open(f"/var/www/html/ssh-{user}.txt", "w", encoding="utf-8") as f:
         f.write(info)
 
@@ -753,8 +832,7 @@ def add_ssh():
         "pass": passwd,
         "expired": exp_full,
         "ip_limit": iplim,
-        "domain": domain,
-        "link": f"https://{domain}/web/ssh-{user}.txt"
+        **details
     })
 
 # ====================== XRAY CREATE ======================
@@ -1823,27 +1901,77 @@ document.addEventListener("click", function(e){
   }
 });
 
+
 function doCreate(e){
   e.preventDefault();
   var f = e.target, btn = f.querySelector("button[type=submit]");
   setBusy(btn, "Membuat akun...", true);
+
   var data = currentProto === "ssh"
     ? { user: f.user.value, pass: f.pass.value, expi: f.expi.value, iplim: f.iplim.value }
     : { user: f.user_x.value, expi: f.expi_x.value, quota: f.quota.value, iplim: f.iplim_x.value };
+
   api(currentProto, data).then(function(j){
     if(j.ok){
-      var h = '<div class="success-mark">✓</div><b>Akun berhasil dibuat</b><br><br><b>User:</b> ' + escapeHTML(j.user) + '<br>';
+      var h = '<div class="success-mark">✓</div><b>Akun berhasil dibuat</b><br><br>';
+      h += '<b>User:</b> ' + escapeHTML(j.user) + '<br>';
+
       if(j.pass) h += '<b>Password:</b> ' + escapeHTML(j.pass) + '<br>';
+
+      // Detail khusus SSH
+      if(currentProto === "ssh"){
+        h += '<hr>';
+        h += '<b>IP:</b> ' + escapeHTML(j.ip) + '<br>';
+        h += '<b>Host:</b> ' + escapeHTML(j.host || j.domain) + '<br>';
+        h += '<b>Location:</b> ' + escapeHTML(j.location) + '<br>';
+
+        h += '<b>OpenSSH:</b> ' + escapeHTML(j.openssh) + '<br>';
+        h += '<b>UdpSSH:</b> ' + escapeHTML(j.udpssh) + '<br>';
+        h += '<b>Dropbear:</b> ' + escapeHTML(j.dropbear) + '<br>';
+        h += '<b>Dropbear WS:</b> ' + escapeHTML(j.dropbear_ws) + '<br>';
+        h += '<b>SSH WS:</b> ' + escapeHTML(j.ssh_ws) + '<br>';
+        h += '<b>SSH SSL WS:</b> ' + escapeHTML(j.ssh_ssl_ws) + '<br>';
+        h += '<b>SSL/TLS:</b> ' + escapeHTML(j.ssl_tls) + '<br>';
+        h += '<b>OVPN SSL:</b> ' + escapeHTML(j.ovpn_ssl) + '<br>';
+        h += '<b>OVPN TCP:</b> ' + escapeHTML(j.ovpn_tcp) + '<br>';
+        h += '<b>OVPN UDP:</b> ' + escapeHTML(j.ovpn_udp) + '<br>';
+        h += '<b>BadVPN UDP:</b> ' + escapeHTML(j.badvpn) + '<br><br>';
+
+        h += '<b>WSS Payload:</b><br><code>' + escapeHTML(j.wss_payload) + '</code><br><br>';
+
+        if(j.link){
+          h += '<b>Link Account:</b><br>';
+          h += '<a href="' + escapeHTML(j.link) + '" target="_blank">' + escapeHTML(j.link) + '</a><br>';
+        }
+      }
+
+      // Detail Xray dan Shadowsocks
       if(j.uuid) h += '<b>UUID:</b> ' + escapeHTML(j.uuid) + '<br>';
       if(j.password) h += '<b>Password:</b> ' + escapeHTML(j.password) + '<br>';
       if(j.method) h += '<b>Metode:</b> ' + escapeHTML(j.method) + '<br>';
-      h += '<b>Kedaluwarsa:</b> ' + escapeHTML(j.expired) + '<br>' + formatLinks(j);
-      showResult("result-create", true, h); showModal("Akun siap digunakan", h);
+
+      h += '<b>Kedaluwarsa:</b> ' + escapeHTML(j.expired) + '<br>';
+
+      if(currentProto !== "ssh"){
+        h += formatLinks(j);
+      }
+
+      showResult("result-create", true, h);
+      showModal("Akun siap digunakan", h);
       f.reset();
-    } else showResult("result-create", false, escapeHTML(j.msg || "Gagal membuat akun"));
-  }).catch(function(err){ showResult("result-create", false, escapeHTML(err.message)); })
-    .then(function(){ setBusy(btn, "Buat akun", false); updateCreateForm(); });
+
+    } else {
+      showResult("result-create", false, escapeHTML(j.msg || "Gagal membuat akun"));
+    }
+
+  }).catch(function(err){
+    showResult("result-create", false, escapeHTML(err.message));
+  }).then(function(){
+    setBusy(btn, "Buat akun", false);
+    updateCreateForm();
+  });
 }
+
 
 function loadList(){
   var box = $("#list-content");
