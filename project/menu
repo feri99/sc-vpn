@@ -308,9 +308,14 @@ display_menu
             features
             display_menu
             ;;
-        9 | 09) 
-            echo -e "${cyan}update${neutral}"
-            bash <(curl -fsSL https://raw.githubusercontent.com/feri99/sc-vpn/main/update.sh)
+        9 | 09)
+            echo -e "${cyan}Menjalankan update FST VPN PANEL...${neutral}"
+            if bash <(curl -fsSL https://raw.githubusercontent.com/feri99/sc-vpn/main/update.sh); then
+                echo -e "${green}Update selesai.${neutral}"
+            else
+                echo -e "${red}Update gagal!${neutral}"
+            fi
+            display_menu
             ;;
         x | X)
             echo -e ""
