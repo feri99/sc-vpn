@@ -47,7 +47,7 @@ log_action "✓ Koneksi internet tersedia"
 echo -e "${yellow}Memulai download dan update file dari GitHub...${neutral}"
 echo ""
 
-
+python3 -c "import waitress" 2>/dev/null && echo "[OK] Waitress sudah terinstal, skip." || { echo "[INSTALL] Waitress belum terinstal, menginstal..."; apt install -y python3-waitress; }
 # Update check akun
 log_action "Mengunduh dan memperbarui file checkvmess..."
 if curl -fsSL -o /usr/bin/checkvmess "${GITHUB_BASE}/project/checkvmess"; then
