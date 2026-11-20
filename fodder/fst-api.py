@@ -2,7 +2,7 @@
 from bottle import Bottle, request, response, redirect, template
 import subprocess, os, json, uuid, datetime, re, base64, hashlib, time, secrets, hmac, shlex, ipaddress
 from functools import wraps
-
+from waitress import serve
 app = Bottle()
 
 
@@ -2041,11 +2041,15 @@ setInterval(function(){
 if __name__ == "__main__":
     print(f"FST Panel listening on 0.0.0.0:{PORT}")
     print(f"Akses melalui reverse proxy HTTPS: https://domain{PREFIX}")
-    print("API endpoints:")
-    print("  POST /panel/api/ssh|vmess|vless|trojan|shadowsocks  → buat")
-    print("  GET/POST /panel/api/list/<proto>                    → list")
-    print("  POST /panel/api/cek/<proto>  {user}                 → detail")
-    print("  POST /panel/api/renew/<proto> {user,expi,...}       → perpanjang")
-    print("  POST /panel/api/del/<proto>  {user}                 → hapus")
-    print("  POST /panel/api/trial/<proto> {expi}                → trial")
-    app.run(host="0.0.0.0", port=PORT, quiet=True)
+    print("Server: Waitress")
+
+    serve(
+        app,
+        host="0.0.0.0",
+        port=PORT,
+        threads=8,
+        connection_limit=100,
+        channel_timeout=30,
+        ident="FST-API"
+    )
+    
