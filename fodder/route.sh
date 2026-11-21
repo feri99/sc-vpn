@@ -4,10 +4,11 @@
 # operations are performed.
 set -Eeuo pipefail
 
-VERSION="3.1"
+VERSION="3.2"
 SDN_IF=""
 SDN_MAC=""
-SDN_CIDR="192.168.10.0/24"
+SDN_CIDR="auto"
+SDN_CIDR_MODE="auto"
 PUBLIC_METRIC=200
 SDN_METRIC=50
 DHCP_PROBE_METRIC=60000
@@ -30,8 +31,12 @@ Normal run (automatic after read-only preflight; no confirmation prompt):
 Read-only checks only (does not request DHCP or alter networking):
   sudo bash $0 --dry-run
 
-Optional SDN network override (default: $SDN_CIDR):
+Optional strict private IPv4 SDN CIDR override (default: automatic DHCP lease detection):
   sudo bash $0 --sdn-cidr 10.20.0.0/24
+
+Automatic mode accepts only one unambiguous private IPv4 lease and a unique
+DHCP gateway in that lease subnet. An explicit override must be a canonical,
+strict RFC1918 IPv4 network (for example, 10.20.0.0/24).
 
 The script automatically uses netplan apply after its read-only preflight. There
 is no confirmation prompt and no automatic rollback. SSH can still disconnect
@@ -41,11 +46,12 @@ overlay is removed and the previous configuration reapplied if probing fails.
 After final apply, there is no automatic rollback. A backup is saved for manual
 recovery.
 
-The script first looks for a unique live SDN lease/default route in the chosen
-CIDR. Recovery without a lease is allowed only when exactly one unused physical
-NIC remains besides the public NIC. It stops rather than guessing if evidence
-is missing or ambiguous. DHCP values are validated live; no VPS, cloud API, or
-GitHub is contacted.
+By default the script identifies a unique live private SDN lease and derives
+its CIDR from the DHCP address/prefix; if no lease is live, recovery is allowed
+only when exactly one unused physical NIC remains besides the public NIC. An
+explicit --sdn-cidr override is strict. The script stops rather than guessing
+if the interface, lease, or gateway is missing or ambiguous. DHCP values are
+validated live; no VPS, cloud API, or GitHub is contacted.
 EOF
 }
 
@@ -55,9 +61,9 @@ while (($#)); do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --sdn-cidr)
-      (($# >= 2)) || fail "--sdn-cidr memerlukan CIDR, mis. 10.20.0.0/24."
-      SDN_CIDR="$2"; shift 2 ;;
-    --sdn-cidr=*) SDN_CIDR="${1#*=}"; shift ;;
+      (($# >= 2)) || fail "--sdn-cidr memerlukan CIDR privat kanonis, mis. 10.20.0.0/24."
+      SDN_CIDR="$2"; SDN_CIDR_MODE="manual"; shift 2 ;;
+    --sdn-cidr=*) SDN_CIDR="${1#*=}"; SDN_CIDR_MODE="manual"; shift ;;
     *) fail "Argumen tidak dikenal: $1 (gunakan --help)." ;;
   esac
 done
@@ -67,6 +73,19 @@ for cmd in ip netplan python3 tar install cp mktemp date readlink ln mkdir rm ch
   command -v "$cmd" >/dev/null 2>&1 || fail "Perintah '$cmd' diperlukan. Belum ada perubahan dibuat."
 done
 python3 -c 'import yaml' >/dev/null 2>&1 || fail "PyYAML diperlukan (paket Ubuntu: python3-yaml). Belum ada perubahan dibuat."
+if [[ "$SDN_CIDR_MODE" == "manual" ]]; then
+  python3 - "$SDN_CIDR" <<'PY' || fail "--sdn-cidr harus berupa jaringan IPv4 RFC1918 kanonis (alamat jaringan tepat, bukan alamat host)."
+import ipaddress, sys
+raw = sys.argv[1]
+try:
+    net = ipaddress.ip_network(raw, strict=True)
+except ValueError as e:
+    sys.exit("CIDR override tidak valid: " + str(e))
+private = [ipaddress.ip_network(x) for x in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+if not isinstance(net, ipaddress.IPv4Network) or not any(net.subnet_of(p) for p in private):
+    sys.exit("CIDR override harus sepenuhnya berada dalam rentang privat RFC1918 IPv4.")
+PY
+fi
 
 # Confirm isolated Netplan validation support before asking.
 NETPLAN_HELP="$(netplan generate --help 2>&1 || true)"
@@ -77,14 +96,22 @@ NETPLAN_HELP="$(netplan generate --help 2>&1 || true)"
 # Resolve the SDN interface from live lease/route evidence first. DHCP recovery
 # is considered only for one uniquely identifiable, unused physical NIC.
 DISCOVERY_JSON="$(python3 - "$SDN_CIDR" "${ROUTE_SDN_SYSFS_ROOT:-/sys}" <<'PY'
-import fnmatch, ipaddress, json, os, subprocess, sys
+import fnmatch, ipaddress, json, subprocess, sys
 from pathlib import Path
 
 cidr_s, sysfs_root = sys.argv[1:]
+auto = cidr_s == "auto"
+private_blocks = [ipaddress.ip_network(x) for x in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
 
 def die(msg):
     print("ERROR: " + msg, file=sys.stderr)
     raise SystemExit(1)
+
+def is_private_ip(ip):
+    return any(ip in block for block in private_blocks)
+
+def is_private_network(net):
+    return isinstance(net, ipaddress.IPv4Network) and any(net.subnet_of(block) for block in private_blocks)
 
 def run_json(args):
     try:
@@ -100,11 +127,13 @@ def norm_mac(value):
     if len(compact) != 12 or any(c not in "0123456789abcdef" for c in compact): return None
     return ":".join(compact[i:i+2] for i in range(0, 12, 2))
 
-try:
-    net = ipaddress.ip_network(cidr_s, strict=True)
-except ValueError as e:
-    die("CIDR SDN tidak valid: " + str(e))
-if not isinstance(net, ipaddress.IPv4Network): die("CIDR SDN harus IPv4.")
+net = None
+if not auto:
+    try:
+        net = ipaddress.ip_network(cidr_s, strict=True)
+    except ValueError as e:
+        die("CIDR SDN tidak valid: " + str(e))
+    if not is_private_network(net): die("CIDR SDN override harus berupa jaringan privat RFC1918 IPv4 kanonis.")
 
 try:
     import yaml
@@ -126,57 +155,84 @@ for item in addr_data:
     name = item.get("ifname")
     for info in item.get("addr_info", []):
         if info.get("family") == "inet":
-            try: addresses.setdefault(name, []).append(ipaddress.IPv4Address(info["local"]))
+            try:
+                ip = ipaddress.IPv4Address(info["local"])
+                prefix = int(info["prefixlen"])
+                if 0 <= prefix <= 32:
+                    addresses.setdefault(name, []).append({"ip": ip, "prefix": prefix})
             except (KeyError, ValueError, TypeError): pass
 routes_by_if = {}
 for route in routes:
     dev = route.get("dev")
     if dev: routes_by_if.setdefault(dev, []).append(route)
 
-# Strongest signal: a live address in the SDN CIDR or a default route whose
-# gateway is in that CIDR. A partial match is selected for validation, never
-# silently reclassified as a clean recovery candidate.
-live_marks = {}
-for name in links:
-    if name == "lo": continue
-    if any(a in net for a in addresses.get(name, [])):
-        live_marks.setdefault(name, set()).add("alamat")
-for route in routes:
-    dev = route.get("dev")
-    gw = route.get("gateway") or route.get("via")
-    if dev in links and route.get("dst") == "default" and gw:
-        try:
-            if ipaddress.IPv4Address(gw) in net:
-                live_marks.setdefault(dev, set()).add("gateway")
-        except ValueError: pass
-if len(live_marks) > 1:
-    die("Bukti SDN live ambigu pada beberapa interface: " + ", ".join(sorted(live_marks)))
-
-def result(name, basis):
+def result(name, basis, cidr=None):
     mac = norm_mac(links.get(name, {}).get("address"))
     if not mac: die(f"MAC live untuk {name} tidak valid; tidak aman melanjutkan.")
-    print(json.dumps({"ifname": name, "mac": mac, "basis": basis}))
+    data = {"ifname": name, "mac": mac, "basis": basis}
+    if cidr is not None: data["cidr"] = str(cidr)
+    print(json.dumps(data))
 
-if live_marks:
-    name = next(iter(live_marks))
-    result(name, "bukti lease/alamat atau gateway live dalam CIDR SDN")
-    raise SystemExit(0)
+if auto:
+    defaults = {}
+    for route in routes:
+        if route.get("dst") != "default": continue
+        dev, gw = route.get("dev"), route.get("gateway") or route.get("via")
+        if dev and gw:
+            try: defaults.setdefault(dev, set()).add(ipaddress.IPv4Address(gw))
+            except (ValueError, TypeError): pass
+    public = sorted(name for name, vals in addresses.items()
+                    if any(a["ip"].is_global for a in vals) and defaults.get(name))
+    if len(public) != 1:
+        die("Mode CIDR otomatis tidak dapat menentukan satu NIC publik; kandidat: " + (", ".join(public) if public else "(tidak ada)"))
+    public_if = public[0]
+    observed, candidates = {}, []
+    for name in links:
+        if name in ("lo", public_if): continue
+        infos = addresses.get(name, [])
+        private_infos = [a for a in infos if is_private_ip(a["ip"])]
+        gateways = defaults.get(name, set())
+        private_gateways = {gw for gw in gateways if is_private_ip(gw)}
+        if not private_infos and not private_gateways: continue
+        observed[name] = True
+        if len(infos) != 1 or len(private_infos) != 1 or len(gateways) != 1: continue
+        info = infos[0]
+        try: lease_net = ipaddress.ip_network(f"{info['ip']}/{info['prefix']}", strict=False)
+        except ValueError: continue
+        if not is_private_network(lease_net): continue
+        gateway = next(iter(gateways))
+        if gateway != info["ip"] and gateway in lease_net:
+            candidates.append((name, lease_net))
+    if len(candidates) == 1 and len(observed) == 1 and next(iter(observed)) == candidates[0][0]:
+        name, lease_net = candidates[0]
+        result(name, f"satu lease IPv4 privat dan satu gateway live dalam subnet DHCP {lease_net}", lease_net)
+        raise SystemExit(0)
+    if observed:
+        names = ", ".join(sorted(observed))
+        die("Bukti alamat/gateway privat SDN ada tetapi lease, subnet, atau gateway tidak tunggal dan koheren pada interface: " + names + "; menolak menebak CIDR.")
+else:
+    live_marks = {}
+    for name in links:
+        if name == "lo": continue
+        if any(a["ip"] in net for a in addresses.get(name, [])):
+            live_marks.setdefault(name, set()).add("alamat")
+    for route in routes:
+        dev = route.get("dev")
+        gw = route.get("gateway") or route.get("via")
+        if dev in links and route.get("dst") == "default" and gw:
+            try:
+                if ipaddress.IPv4Address(gw) in net:
+                    live_marks.setdefault(dev, set()).add("gateway")
+            except (ValueError, TypeError): pass
+    if len(live_marks) > 1:
+        die("Bukti SDN live ambigu pada beberapa interface: " + ", ".join(sorted(live_marks)))
+    if live_marks:
+        name = next(iter(live_marks))
+        result(name, "bukti lease/alamat atau gateway live dalam CIDR SDN", net)
+        raise SystemExit(0)
 
-# No live SDN evidence: determine the public NIC using its global IPv4 and
-# default gateway, then use exact Netplan selectors to recognize configured NICs.
-defaults = {}
-for route in routes:
-    if route.get("dst") != "default": continue
-    dev, gw = route.get("dev"), route.get("gateway") or route.get("via")
-    if dev and gw:
-        try: defaults.setdefault(dev, set()).add(str(ipaddress.IPv4Address(gw)))
-        except ValueError: pass
-public = sorted(name for name, vals in addresses.items()
-                if any(a.is_global for a in vals) and defaults.get(name))
-if len(public) != 1:
-    die("Tanpa lease SDN, tidak bisa menentukan satu NIC publik; kandidat: " + (", ".join(public) if public else "(tidak ada)"))
-public_if = public[0]
-
+# No accepted live SDN evidence: recovery requires a uniquely identifiable,
+# unused physical NIC. Ambiguous or partial private evidence above always stops.
 def map_netplan(name):
     matches, uncertain = [], []
     live_mac = norm_mac(links.get(name, {}).get("address"))
@@ -204,6 +260,20 @@ def map_netplan(name):
     if uncertain: return None, uncertain
     return (matches[0] if matches else None), []
 
+# If no live SDN evidence, determine the public NIC before considering recovery.
+defaults = {}
+for route in routes:
+    if route.get("dst") != "default": continue
+    dev, gw = route.get("dev"), route.get("gateway") or route.get("via")
+    if dev and gw:
+        try: defaults.setdefault(dev, set()).add(str(ipaddress.IPv4Address(gw)))
+        except (ValueError, TypeError): pass
+public = sorted(name for name, vals in addresses.items()
+                if any(a["ip"].is_global for a in vals) and defaults.get(name))
+if len(public) != 1:
+    die("Tanpa lease SDN, tidak bisa menentukan satu NIC publik; kandidat: " + (", ".join(public) if public else "(tidak ada)"))
+public_if = public[0]
+
 mapped, uncertain = {}, {}
 for name in links:
     if name in ("lo", public_if): continue
@@ -214,8 +284,6 @@ if uncertain:
     detail = "; ".join(f"{n}: {','.join(ids)}" for n, ids in sorted(uncertain.items()))
     die("Selector Netplan tidak dapat diverifikasi; tidak aman menebak NIC SDN (" + detail + ").")
 
-# With no live SDN address/gateway, configured non-public interfaces are not
-# recovery candidates. This excludes utility networks and DHCPv6-only NICs.
 physical = []
 for name in links:
     if name in ("lo", public_if) or name in mapped: continue
@@ -227,14 +295,16 @@ if len(physical) != 1:
     die("Interface SDN tidak teridentifikasi dari lease live; kandidat fisik non-publik yang belum dipetakan harus tepat satu, ditemukan: " + detail + ("; NIC terpetakan dikecualikan: " + excluded if excluded else ""))
 name = physical[0]
 if addresses.get(name) or routes_by_if.get(name):
-    die(f"Kandidat fisik {name} memiliki alamat atau rute IPv4 tetapi belum dipetakan Netplan dan tidak cocok dengan CIDR SDN; recovery otomatis ditolak.")
-result(name, "satu-satunya NIC fisik non-publik, tanpa IPv4/rute dan tanpa stanza Netplan")
+    die(f"Kandidat fisik {name} memiliki alamat atau rute IPv4 tetapi belum dipetakan Netplan; recovery otomatis ditolak.")
+result(name, "satu-satunya NIC fisik non-publik, tanpa IPv4/rute dan tanpa stanza Netplan", net)
 PY
 )" || fail "Deteksi interface SDN read-only gagal; tidak ada perubahan dibuat."
 SDN_IF="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ifname"])' "$DISCOVERY_JSON")"
 SDN_MAC="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["mac"])' "$DISCOVERY_JSON")"
 SDN_BASIS="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["basis"])' "$DISCOVERY_JSON")"
-printf 'Deteksi SDN baca-saja: %s (%s); dasar: %s.\n' "$SDN_IF" "$SDN_MAC" "$SDN_BASIS"
+DISCOVERED_SDN_CIDR="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("cidr", ""))' "$DISCOVERY_JSON")"
+if [[ -n "$DISCOVERED_SDN_CIDR" ]]; then SDN_CIDR="$DISCOVERED_SDN_CIDR"; fi
+printf 'Deteksi SDN baca-saja: %s (%s); dasar: %s; CIDR: %s.\n' "$SDN_IF" "$SDN_MAC" "$SDN_BASIS" "$SDN_CIDR"
 
 # Read-only detection. The same checks are repeated after DHCP succeeds, so
 # dynamic values and any route/rule changes are validated before persistent writes.
@@ -271,10 +341,15 @@ def normalize_mac(value):
         return None
     return ":".join(compact[i:i+2] for i in range(0, 12, 2))
 
+private_blocks = [ipaddress.ip_network(x) for x in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+def is_private_network(net):
+    return isinstance(net, ipaddress.IPv4Network) and any(net.subnet_of(block) for block in private_blocks)
 try:
-    sdn_net = ipaddress.ip_network(sdn_cidr_s, strict=True)
+    sdn_net = None if sdn_cidr_s == "auto" else ipaddress.ip_network(sdn_cidr_s, strict=True)
 except ValueError as e:
     die("CIDR SDN internal tidak valid: " + str(e))
+if sdn_net is not None and not is_private_network(sdn_net):
+    die("CIDR SDN internal harus berupa jaringan privat RFC1918 IPv4.")
 
 try:
     netplan_text = subprocess.run(["netplan", "get"], text=True, capture_output=True, check=True).stdout
@@ -311,7 +386,9 @@ for item in addr_data:
             if info.get("family") == "inet":
                 try:
                     ip = ipaddress.IPv4Address(info["local"])
-                    addresses[name].append({"ip": str(ip), "prefix": int(info.get("prefixlen", 0)), "global": ip.is_global})
+                    prefix = int(info["prefixlen"])
+                    if 0 <= prefix <= 32:
+                        addresses[name].append({"ip": str(ip), "prefix": prefix, "global": ip.is_global})
                 except (KeyError, ValueError, TypeError):
                     pass
 
@@ -376,7 +453,16 @@ else:
     if sdn_id in ethernets:
         die(f"Netplan ID {sdn_id} sudah digunakan; menolak menimpa atau menebak ID lain.")
 
-sdn_leased = [a for a in addresses.get(sdn_if, []) if ipaddress.IPv4Address(a["ip"]) in sdn_net]
+sdn_all_addresses = addresses.get(sdn_if, [])
+if sdn_net is None and len(sdn_all_addresses) == 1:
+    try:
+        lease_ip = ipaddress.IPv4Address(sdn_all_addresses[0]["ip"])
+        candidate_net = ipaddress.ip_network(f"{lease_ip}/{sdn_all_addresses[0]['prefix']}", strict=False)
+        if is_private_network(candidate_net): sdn_net = candidate_net
+    except (KeyError, ValueError, TypeError):
+        pass
+sdn_leased = ([a for a in sdn_all_addresses if ipaddress.IPv4Address(a["ip"]) in sdn_net]
+              if sdn_net is not None else [])
 sdn_defaults, sdn_dhcp_defaults = [], []
 for route in route_data + sdn_routes:
     if route.get("dst") == "default" and route.get("dev") == sdn_if:
@@ -412,9 +498,20 @@ if mode == "static":
     else:
         die(f"{sdn_if} tanpa stanza mempunyai state IPv4/rute parsial atau tidak valid; pemulihan otomatis tidak dijalankan agar konfigurasi normal tidak terganggu.")
 elif mode == "lease":
+    if sdn_cidr_s == "auto":
+        if len(sdn_all_addresses) != 1:
+            die(f"DHCP harus menghasilkan tepat satu alamat IPv4 pada {sdn_if}; ditemukan {len(sdn_all_addresses)}. Menolak menebak CIDR.")
+        try:
+            lease_ip = ipaddress.IPv4Address(sdn_all_addresses[0]["ip"])
+            sdn_net = ipaddress.ip_network(f"{lease_ip}/{sdn_all_addresses[0]['prefix']}", strict=False)
+        except (KeyError, ValueError, TypeError) as e:
+            die(f"Lease DHCP pada {sdn_if} tidak memiliki alamat/prefix IPv4 yang valid: {e}")
+        if not is_private_network(sdn_net):
+            die(f"Lease DHCP {lease_ip}/{sdn_all_addresses[0]['prefix']} bukan subnet privat RFC1918; menolak menebak CIDR.")
+        sdn_leased = [a for a in sdn_all_addresses if ipaddress.IPv4Address(a["ip"]) in sdn_net]
     leased = sdn_leased
-    if len(leased) != 1:
-        die(f"DHCP tidak menghasilkan tepat satu alamat IPv4 pada {sdn_if} di dalam {sdn_net}; tidak ada Netplan persisten ditulis.")
+    if len(sdn_all_addresses) != 1 or len(leased) != 1:
+        die(f"DHCP tidak menghasilkan tepat satu alamat IPv4 pada {sdn_if} dalam satu lease yang tidak ambigu; ditemukan {len(sdn_all_addresses)} alamat.")
     if len(sdn_defaults) != 1:
         die(f"DHCP tidak memberikan satu gateway IPv4 yang bisa diverifikasi pada {sdn_if}; gateway yang diamati: {', '.join(sdn_defaults) if sdn_defaults else '(tidak ada)'}. Tidak ada Netplan persisten ditulis.")
     sdn_gw = sdn_defaults[0]
@@ -498,7 +595,7 @@ result = {
     "public_prefix": pub_prefix, "public_gw": pub_gw, "public_metric": pub_metric,
     "sdn_if": sdn_if, "sdn_mac": normalize_mac(confirmed_mac),
     "sdn_id": sdn_id, "sdn_new": sdn_new, "sdn_recovery": sdn_recovery,
-    "sdn_cidr": str(sdn_net), "table": table, "priority": priority
+    "sdn_cidr": str(sdn_net) if sdn_net is not None else None, "table": table, "priority": priority
 }
 if mode == "lease":
     result.update({"sdn_ip": leased[0]["ip"], "sdn_prefix": leased[0]["prefix"], "sdn_gw": sdn_gw})
@@ -586,7 +683,7 @@ validate_overlay() {
     fi
   done
   mkdir -p "$stage_root/etc/netplan" || return 1
-  cp "$yaml_file" "$stage_root/etc/netplan/$(basename "$TARGET")" || return 1
+  install -o root -g root -m 600 "$yaml_file" "$stage_root/etc/netplan/$(basename "$TARGET")" || return 1
   netplan generate --root-dir "$stage_root"
 }
 
@@ -620,6 +717,7 @@ on_exit() {
 }
 trap on_exit EXIT HUP INT TERM
 
+umask 077
 RUNTIME_DIR="$(mktemp -d /run/route-yes-no-sdn-auto.XXXXXX)" || fail "Tidak dapat membuat direktori runtime sementara."
 if [[ "$SDN_RECOVERY" == "1" ]]; then
   ensure_backup || fail "Tidak dapat membuat cadangan Netplan; probe DHCP tidak dijalankan."
