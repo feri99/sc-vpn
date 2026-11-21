@@ -4,7 +4,7 @@
 # operations are performed.
 set -Eeuo pipefail
 
-VERSION="3.2"
+VERSION="3.3"
 SDN_IF=""
 SDN_MAC=""
 SDN_CIDR="auto"
@@ -16,6 +16,7 @@ DHCP_PROBE_TIMEOUT=60
 DHCP_PROBE_INTERVAL=2
 TABLE=1001
 SDN_ID="upcloud_sdn"
+SDN_RECOVERY_REUSE=0
 TARGET="/etc/netplan/99-upcloud-sdn-auto-routing.yaml"
 SCRIPT_PATH="$(readlink -f "$0")"
 
@@ -48,10 +49,13 @@ recovery.
 
 By default the script identifies a unique live private SDN lease and derives
 its CIDR from the DHCP address/prefix; if no lease is live, recovery is allowed
-only when exactly one unused physical NIC remains besides the public NIC. An
-explicit --sdn-cidr override is strict. The script stops rather than guessing
-if the interface, lease, or gateway is missing or ambiguous. DHCP values are
-validated live; no VPS, cloud API, or GitHub is contacted.
+first only when exactly one clean unmatched physical NIC remains besides the
+public NIC. If none remains, one physical NIC with an explicit DHCPv6 stanza
+and no IPv4 configuration/state may be a last-resort DHCPv4 probe candidate.
+The probe lease must match that NIC's unique live MAC. An explicit --sdn-cidr
+override is strict; the script stops rather than guessing if evidence is
+missing or ambiguous. DHCP values are validated live; no VPS, cloud API, or
+GitHub is contacted.
 EOF
 }
 
@@ -166,11 +170,16 @@ for route in routes:
     dev = route.get("dev")
     if dev: routes_by_if.setdefault(dev, []).append(route)
 
-def result(name, basis, cidr=None):
+def result(name, basis, cidr=None, netplan_id=None):
     mac = norm_mac(links.get(name, {}).get("address"))
     if not mac: die(f"MAC live untuk {name} tidak valid; tidak aman melanjutkan.")
+    duplicates = sorted(other for other, link in links.items()
+                        if other != name and norm_mac(link.get("address")) == mac)
+    if duplicates:
+        die(f"MAC {mac} untuk {name} juga dipakai interface {', '.join(duplicates)}; probe tidak dapat diikat unik.")
     data = {"ifname": name, "mac": mac, "basis": basis}
     if cidr is not None: data["cidr"] = str(cidr)
+    if netplan_id is not None: data["netplan_id"] = netplan_id
     print(json.dumps(data))
 
 if auto:
@@ -186,15 +195,12 @@ if auto:
     if len(public) != 1:
         die("Mode CIDR otomatis tidak dapat menentukan satu NIC publik; kandidat: " + (", ".join(public) if public else "(tidak ada)"))
     public_if = public[0]
-    observed, candidates = {}, []
+    candidates = []
     for name in links:
         if name in ("lo", public_if): continue
         infos = addresses.get(name, [])
         private_infos = [a for a in infos if is_private_ip(a["ip"])]
         gateways = defaults.get(name, set())
-        private_gateways = {gw for gw in gateways if is_private_ip(gw)}
-        if not private_infos and not private_gateways: continue
-        observed[name] = True
         if len(infos) != 1 or len(private_infos) != 1 or len(gateways) != 1: continue
         info = infos[0]
         try: lease_net = ipaddress.ip_network(f"{info['ip']}/{info['prefix']}", strict=False)
@@ -203,13 +209,12 @@ if auto:
         gateway = next(iter(gateways))
         if gateway != info["ip"] and gateway in lease_net:
             candidates.append((name, lease_net))
-    if len(candidates) == 1 and len(observed) == 1 and next(iter(observed)) == candidates[0][0]:
+    if len(candidates) > 1:
+        die("Lease privat dan gateway yang koheren ditemukan pada beberapa interface: " + ", ".join(sorted(name for name, _ in candidates)) + "; menolak memilih NIC SDN.")
+    if len(candidates) == 1:
         name, lease_net = candidates[0]
         result(name, f"satu lease IPv4 privat dan satu gateway live dalam subnet DHCP {lease_net}", lease_net)
         raise SystemExit(0)
-    if observed:
-        names = ", ".join(sorted(observed))
-        die("Bukti alamat/gateway privat SDN ada tetapi lease, subnet, atau gateway tidak tunggal dan koheren pada interface: " + names + "; menolak menebak CIDR.")
 else:
     live_marks = {}
     for name in links:
@@ -231,8 +236,8 @@ else:
         result(name, "bukti lease/alamat atau gateway live dalam CIDR SDN", net)
         raise SystemExit(0)
 
-# No accepted live SDN evidence: recovery requires a uniquely identifiable,
-# unused physical NIC. Ambiguous or partial private evidence above always stops.
+# No complete live lease/gateway pair was accepted: recovery is limited to one
+# unused physical NIC after exact Netplan mapping, and that NIC must be clean.
 def map_netplan(name):
     matches, uncertain = [], []
     live_mac = norm_mac(links.get(name, {}).get("address"))
@@ -284,26 +289,76 @@ if uncertain:
     detail = "; ".join(f"{n}: {','.join(ids)}" for n, ids in sorted(uncertain.items()))
     die("Selector Netplan tidak dapat diverifikasi; tidak aman menebak NIC SDN (" + detail + ").")
 
+def cfg_has_ipv4_addresses(cfg):
+    values = cfg.get("addresses") or []
+    if not isinstance(values, list): return True
+    for value in values:
+        try:
+            if ipaddress.ip_interface(str(value)).version == 4: return True
+        except ValueError:
+            return True
+    return False
+
+def cfg_has_ipv4_routes(cfg):
+    values = cfg.get("routes") or []
+    if not isinstance(values, list): return True
+    for route in values:
+        if not isinstance(route, dict): return True
+        destination = route.get("to")
+        if destination in (None, "default", "0.0.0.0/0"): return True
+        try:
+            if ipaddress.ip_network(destination, strict=False).version == 4: return True
+        except (TypeError, ValueError):
+            return True
+        via = route.get("via")
+        if via:
+            try: ipaddress.IPv4Address(via); return True
+            except (ValueError, TypeError): pass
+    return False
+
 physical = []
 for name in links:
     if name in ("lo", public_if) or name in mapped: continue
     device = Path(sysfs_root) / "class" / "net" / name / "device"
     if device.exists() or device.is_symlink(): physical.append(name)
-if len(physical) != 1:
+if len(physical) == 1:
+    name = physical[0]
+    if addresses.get(name) or routes_by_if.get(name):
+        die(f"Kandidat fisik {name} memiliki alamat atau rute IPv4 tetapi belum dipetakan Netplan; recovery otomatis ditolak.")
+    result(name, "satu-satunya NIC fisik non-publik tanpa stanza IPv4/lease; terikat ke MAC live", net)
+    raise SystemExit(0)
+if len(physical) > 1:
     excluded = ", ".join(f"{name} (Netplan {nid})" for name, nid in sorted(mapped.items()))
-    detail = ", ".join(sorted(physical)) if physical else "(tidak ada; sysfs tidak memberi bukti NIC fisik)"
-    die("Interface SDN tidak teridentifikasi dari lease live; kandidat fisik non-publik yang belum dipetakan harus tepat satu, ditemukan: " + detail + ("; NIC terpetakan dikecualikan: " + excluded if excluded else ""))
-name = physical[0]
-if addresses.get(name) or routes_by_if.get(name):
-    die(f"Kandidat fisik {name} memiliki alamat atau rute IPv4 tetapi belum dipetakan Netplan; recovery otomatis ditolak.")
-result(name, "satu-satunya NIC fisik non-publik, tanpa IPv4/rute dan tanpa stanza Netplan", net)
+    die("Kandidat fisik non-publik tanpa stanza Netplan tidak unik: " + ", ".join(sorted(physical)) + ("; NIC terpetakan: " + excluded if excluded else ""))
+
+# A physical NIC with an explicit IPv6-only Netplan stanza is a last-resort candidate:
+# consider it only when no completely unmatched physical NIC exists, and only
+# if exactly one such stanza has no IPv4 lease, address, DHCPv4, or IPv4 route.
+ipv6_only = []
+for name, nid in mapped.items():
+    device = Path(sysfs_root) / "class" / "net" / name / "device"
+    cfg = ethernets.get(nid)
+    if not (device.exists() or device.is_symlink()) or not isinstance(cfg, dict): continue
+    if cfg.get("dhcp6") is not True: continue
+    if cfg.get("dhcp4") is not None or cfg_has_ipv4_addresses(cfg) or cfg_has_ipv4_routes(cfg): continue
+    if addresses.get(name) or routes_by_if.get(name): continue
+    ipv6_only.append((name, nid))
+if len(ipv6_only) == 1:
+    name, nid = ipv6_only[0]
+    result(name, "satu-satunya NIC fisik Netplan IPv6-only tanpa IPv4; probe DHCPv4 diikat ke MAC live", net, nid)
+    raise SystemExit(0)
+if len(ipv6_only) > 1:
+    die("Lebih dari satu NIC fisik IPv6-only layak diprobe untuk SDN: " + ", ".join(sorted(name for name, _ in ipv6_only)) + "; menolak memilih interface.")
+die("Interface SDN tidak teridentifikasi: tidak ada satu NIC fisik unmatched yang bersih atau satu kandidat IPv6-only yang unik.")
 PY
 )" || fail "Deteksi interface SDN read-only gagal; tidak ada perubahan dibuat."
 SDN_IF="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ifname"])' "$DISCOVERY_JSON")"
 SDN_MAC="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["mac"])' "$DISCOVERY_JSON")"
 SDN_BASIS="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["basis"])' "$DISCOVERY_JSON")"
 DISCOVERED_SDN_CIDR="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("cidr", ""))' "$DISCOVERY_JSON")"
+DISCOVERED_SDN_ID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("netplan_id", ""))' "$DISCOVERY_JSON")"
 if [[ -n "$DISCOVERED_SDN_CIDR" ]]; then SDN_CIDR="$DISCOVERED_SDN_CIDR"; fi
+if [[ -n "$DISCOVERED_SDN_ID" ]]; then SDN_ID="$DISCOVERED_SDN_ID"; SDN_RECOVERY_REUSE=1; fi
 printf 'Deteksi SDN baca-saja: %s (%s); dasar: %s; CIDR: %s.\n' "$SDN_IF" "$SDN_MAC" "$SDN_BASIS" "$SDN_CIDR"
 
 # Read-only detection. The same checks are repeated after DHCP succeeds, so
@@ -340,6 +395,33 @@ def normalize_mac(value):
     if len(compact) != 12 or any(c not in "0123456789abcdef" for c in compact):
         return None
     return ":".join(compact[i:i+2] for i in range(0, 12, 2))
+
+def cfg_has_ipv4_addresses(cfg):
+    values = cfg.get("addresses") or []
+    if not isinstance(values, list): return True
+    for value in values:
+        try:
+            if ipaddress.ip_interface(str(value)).version == 4: return True
+        except ValueError:
+            return True
+    return False
+
+def cfg_has_ipv4_routes(cfg):
+    values = cfg.get("routes") or []
+    if not isinstance(values, list): return True
+    for route in values:
+        if not isinstance(route, dict): return True
+        destination = route.get("to")
+        if destination in (None, "default", "0.0.0.0/0"): return True
+        try:
+            if ipaddress.ip_network(destination, strict=False).version == 4: return True
+        except (TypeError, ValueError):
+            return True
+        via = route.get("via")
+        if via:
+            try: ipaddress.IPv4Address(via); return True
+            except (ValueError, TypeError): pass
+    return False
 
 private_blocks = [ipaddress.ip_network(x) for x in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
 def is_private_network(net):
@@ -438,7 +520,7 @@ if sdn_mapping:
     sdn_new = 0
     if re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", sdn_id) is None:
         die(f"ID Netplan SDN tidak aman untuk YAML: {sdn_id!r}")
-    if sdn_cfg.get("addresses"):
+    if cfg_has_ipv4_addresses(sdn_cfg):
         die(f"Stanza Netplan {sdn_id} memiliki alamat IPv4 statis; skrip tidak akan mencampur DHCP dengan alamat statis.")
     sdn_overrides = sdn_cfg.get("dhcp4-overrides") or {}
     if not isinstance(sdn_overrides, dict):
@@ -480,16 +562,22 @@ sdn_dhcp_defaults = sorted(set(sdn_dhcp_defaults))
 sdn_recovery = 0
 
 # Preserve the normal route-detection path whenever a valid SDN DHCP lease is
-# already live. Recovery is only for the exact clean state: no stanza, no IPv4,
-# and no IPv4 route on the confirmed SDN NIC.
+# already live. Recovery is limited to a clean unmatched NIC or one unique
+# IPv6-only stanza with no existing IPv4 configuration/state.
 if mode == "static":
     if not sdn_new:
-        if sdn_mapping[1].get("dhcp4") is not True:
-            die(f"Stanza Netplan {sdn_id} belum mengaktifkan dhcp4: true; perbaiki stanza tersebut secara eksplisit sebelum melanjutkan.")
-        if len(sdn_leased) != 1 or len(sdn_defaults) != 1:
-            die(f"Stanza Netplan {sdn_id} sudah ada, tetapi belum ada satu lease DHCPv4/gateway valid pada {sdn_if}; aktifkan DHCP dengan Netplan terlebih dahulu. Tidak ada perubahan dibuat.")
-        if ipaddress.IPv4Address(sdn_defaults[0]) not in sdn_net:
-            die(f"Gateway SDN aktif {sdn_defaults[0]} berada di luar {sdn_net}; tidak ada perubahan dibuat.")
+        sdn_cfg = sdn_mapping[1]
+        if sdn_cfg.get("dhcp4") is True:
+            if len(sdn_leased) != 1 or len(sdn_defaults) != 1:
+                die(f"Stanza Netplan {sdn_id} sudah ada, tetapi belum ada satu lease DHCPv4/gateway valid pada {sdn_if}; aktifkan DHCP dengan Netplan terlebih dahulu. Tidak ada perubahan dibuat.")
+            if sdn_net is None or ipaddress.IPv4Address(sdn_defaults[0]) not in sdn_net:
+                die(f"Gateway SDN aktif {sdn_defaults[0]} berada di luar CIDR privat lease yang terdeteksi; tidak ada perubahan dibuat.")
+        elif (sdn_cfg.get("dhcp4") is None and not cfg_has_ipv4_addresses(sdn_cfg)
+              and not cfg_has_ipv4_routes(sdn_cfg) and not sdn_all_addresses
+              and not sdn_routes and not any(r.get("dev") == sdn_if for r in route_data)):
+            sdn_recovery = 1
+        else:
+            die(f"Stanza Netplan {sdn_id} sudah mengatur atau menonaktifkan IPv4; bukan kandidat probe SDN yang aman.")
     elif not addresses.get(sdn_if) and not sdn_routes and not any(r.get("dev") == sdn_if for r in route_data):
         sdn_recovery = 1
     elif len(sdn_leased) == 1 and len(sdn_defaults) == 1 and len(sdn_dhcp_defaults) == 1:
@@ -622,12 +710,10 @@ PRIORITY="$(read_value priority)"
 
 printf 'Pra-pemeriksaan read-only lulus.\n'
 printf '  Publik: %s (%s/%s), gateway teramati %s\n' "$PUB_IF" "$PUB_IP" "$PUB_PREFIX" "$PUB_GW"
-if [[ "$SDN_NEW" == "1" ]]; then
-  if [[ "$SDN_RECOVERY" == "1" ]]; then
-    printf '  SDN:    tidak ada stanza/alamat/rute; recovery terbatas ke NIC unik %s / %s.\n' "$SDN_IF" "$SDN_MAC"
-  else
-    printf '  SDN:    lease normal sudah valid; stanza exact-MAC akan ditambahkan seperti jalur normal, tanpa recovery DHCP.\n'
-  fi
+if [[ "$SDN_RECOVERY" == "1" ]]; then
+  printf '  SDN:    probe recovery terbatas ke NIC unik %s / %s; stanza yang ada (jika IPv6-only) dipertahankan.\n' "$SDN_IF" "$SDN_MAC"
+elif [[ "$SDN_NEW" == "1" ]]; then
+  printf '  SDN:    lease normal sudah valid; stanza exact-MAC akan ditambahkan seperti jalur normal, tanpa recovery DHCP.\n'
 else
   printf '  SDN:    stanza Netplan %s yang cocok akan dipakai ulang untuk %s, MAC %s.\n' "$SDN_ID" "$SDN_IF" "$SDN_MAC"
 fi
@@ -782,9 +868,9 @@ SDN_GW="$(read_lease sdn_gw)"
 SDN_ID="$(read_lease sdn_id)"
 SDN_NEW="$(read_lease sdn_new)"
 PRIORITY="$(read_lease priority)"
-if [[ "$SDN_RECOVERY" == "1" ]]; then
-  # netplan get now sees our temporary probe stanza; it was not in the original
-  # configuration, so the final overlay must still include the detected MAC.
+if [[ "$SDN_RECOVERY" == "1" && "$SDN_RECOVERY_REUSE" != "1" ]]; then
+  # The unmatched NIC had no stanza originally, so the final overlay must add
+  # one bound to its confirmed MAC. An IPv6-only stanza is instead reused.
   SDN_NEW=1
 fi
 
