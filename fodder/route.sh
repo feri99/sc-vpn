@@ -4,7 +4,7 @@
 # operations are performed.
 set -Eeuo pipefail
 
-VERSION="3.3"
+VERSION="3.4"
 SDN_IF=""
 SDN_MAC=""
 SDN_CIDR="auto"
@@ -50,12 +50,14 @@ recovery.
 By default the script identifies a unique live private SDN lease and derives
 its CIDR from the DHCP address/prefix; if no lease is live, recovery is allowed
 first only when exactly one clean unmatched physical NIC remains besides the
-public NIC. If none remains, one physical NIC with an explicit DHCPv6 stanza
-and no IPv4 configuration/state may be a last-resort DHCPv4 probe candidate.
-The probe lease must match that NIC's unique live MAC. An explicit --sdn-cidr
-override is strict; the script stops rather than guessing if evidence is
-missing or ambiguous. DHCP values are validated live; no VPS, cloud API, or
-GitHub is contacted.
+public NIC. As a narrow local fallback, when multiple unmatched NICs all use
+the ensN naming pattern, one unique, clean Netplan DHCPv6-only ensN is used
+directly if it has no live global IPv6 address; if it does, its clean and
+unique unmatched ens(N+1) is used instead. The probe lease must match that
+NIC's unique live MAC.
+An explicit --sdn-cidr override is strict; the script stops rather than
+guessing if evidence is missing or ambiguous. DHCP values are validated live;
+no VPS, cloud API, or GitHub is contacted.
 EOF
 }
 
@@ -100,7 +102,7 @@ NETPLAN_HELP="$(netplan generate --help 2>&1 || true)"
 # Resolve the SDN interface from live lease/route evidence first. DHCP recovery
 # is considered only for one uniquely identifiable, unused physical NIC.
 DISCOVERY_JSON="$(python3 - "$SDN_CIDR" "${ROUTE_SDN_SYSFS_ROOT:-/sys}" <<'PY'
-import fnmatch, ipaddress, json, subprocess, sys
+import fnmatch, ipaddress, json, re, subprocess, sys
 from pathlib import Path
 
 cidr_s, sysfs_root = sys.argv[1:]
@@ -328,6 +330,54 @@ if len(physical) == 1:
     result(name, "satu-satunya NIC fisik non-publik tanpa stanza IPv4/lease; terikat ke MAC live", net)
     raise SystemExit(0)
 if len(physical) > 1:
+    # Local-only UpCloud interface-order fallback: a unique DHCPv6-only ensN
+    # is the candidate without live global IPv6, otherwise consider ens(N+1).
+    ens_numbers = {}
+    for name in physical:
+        match = re.fullmatch(r"ens([0-9]+)", name)
+        if match:
+            ens_numbers[name] = int(match.group(1))
+    if len(ens_numbers) == len(physical):
+        ens_all = {}
+        for name in links:
+            match = re.fullmatch(r"ens([0-9]+)", name)
+            if match: ens_all.setdefault(int(match.group(1)), []).append(name)
+        ens_anchors = []
+        for name, nid in mapped.items():
+            match = re.fullmatch(r"ens([0-9]+)", name)
+            cfg = ethernets.get(nid)
+            if not match or not isinstance(cfg, dict): continue
+            anchor_index = int(match.group(1))
+            if len(ens_all.get(anchor_index, [])) != 1: continue
+            device = Path(sysfs_root) / "class" / "net" / name / "device"
+            if not (device.exists() or device.is_symlink()): continue
+            if cfg.get("dhcp6") is not True: continue
+            if cfg.get("dhcp4") is not None or cfg_has_ipv4_addresses(cfg) or cfg_has_ipv4_routes(cfg): continue
+            if addresses.get(name) or routes_by_if.get(name): continue
+            ens_anchors.append((name, anchor_index, nid))
+        if len(ens_anchors) == 1:
+            anchor, anchor_index, anchor_nid = ens_anchors[0]
+            ipv6_addr_data = run_json(["ip", "-j", "-6", "addr", "show"])
+            global_ipv6 = set()
+            for item in ipv6_addr_data:
+                name = item.get("ifname")
+                for info in item.get("addr_info", []):
+                    if info.get("family") != "inet6": continue
+                    try:
+                        if ipaddress.IPv6Address(info["local"]).is_global:
+                            global_ipv6.add(name)
+                    except (KeyError, ValueError, TypeError): pass
+            if anchor not in global_ipv6:
+                result(anchor, f"fallback lokal: {anchor} adalah satu-satunya ens DHCPv6-only yang bersih tanpa IPv6 global aktif", net, anchor_nid)
+                raise SystemExit(0)
+            next_index = anchor_index + 1
+            successors = [name for name in ens_all.get(next_index, []) if name in physical]
+            higher = {name for name, index in ens_numbers.items() if index > anchor_index}
+            if len(ens_all.get(next_index, [])) == 1 and len(successors) == 1 and higher == set(successors):
+                name = successors[0]
+                if not addresses.get(name) and not routes_by_if.get(name):
+                    result(name, f"fallback lokal: {anchor} memiliki IPv6 global aktif; {name} adalah ens berurutan yang unik dan bersih", net)
+                    raise SystemExit(0)
     excluded = ", ".join(f"{name} (Netplan {nid})" for name, nid in sorted(mapped.items()))
     die("Kandidat fisik non-publik tanpa stanza Netplan tidak unik: " + ", ".join(sorted(physical)) + ("; NIC terpetakan: " + excluded if excluded else ""))
 
